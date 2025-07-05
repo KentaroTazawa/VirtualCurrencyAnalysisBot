@@ -93,17 +93,24 @@ def main():
 
     try:
         top_symbols = get_top_movers_okx(limit=30)
+        print(f"対象シンボル数: {len(top_symbols)}")
         for symbol in top_symbols:
             try:
-                time.sleep(0.4)  # OKXレート制限対策
+                print(f"処理中: {symbol}")
+                time.sleep(0.4)  # OKXのレート制限対策
                 closes = fetch_okx_closes(symbol=symbol, interval="15m", limit=50)
+                print(f"{symbol} のローソク足取得成功")
                 result = send_to_gpt(closes, symbol=symbol)
+                print(f"{symbol} のGPT分析完了")
                 send_telegram(f"📉 {symbol} ショート分析結果（OKX 15分足）\n\n{result}")
             except Exception as e:
-                send_telegram(f"⚠️ {symbol} 分析エラー: {e}")
+                error_msg = f"⚠️ {symbol} 分析エラー: {e}"
+                print(error_msg)
+                send_telegram(error_msg)
     except Exception as e:
-        send_telegram(f"❗️Bot全体エラー: {e}")
-        print(f"全体エラー: {e}")
+        error_msg = f"❗️Bot全体エラー: {e}"
+        print(error_msg)
+        send_telegram(error_msg)
     finally:
         send_telegram("✅ Bot処理完了しました（main.py 終了）")
 
