@@ -3,13 +3,17 @@ import json
 import time
 import threading
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 import openai
 from PIL import Image
 from io import BytesIO
 import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib
+
+# --- フォント警告回避（英語のみ使用） ---
+matplotlib.rcParams['font.family'] = 'DejaVu Sans'  # 日本語回避のため英語フォント使用
 
 # --- 環境変数読み込み ---
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -19,8 +23,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # --- 通知履歴ファイル ---
 NOTIFIED_FILE = "notified_pairs.json"
 
+def get_jst_now():
+    return datetime.now(timezone.utc) + timedelta(hours=9)
+
 def load_notified():
-    today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")  # JST
+    today = get_jst_now().strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE, "r") as f:
             data = json.load(f)
@@ -28,7 +35,7 @@ def load_notified():
     return set()
 
 def save_notified(pairs):
-    today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")  # JST
+    today = get_jst_now().strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE, "r") as f:
             data = json.load(f)
@@ -51,7 +58,7 @@ def calculate_rsi(prices, period=14):
 def generate_chart(prices, symbol):
     plt.figure(figsize=(6,3))
     plt.plot(prices, color='red')
-    plt.title(f"{symbol} 15m Close Price")
+    plt.title(f"{symbol} 15m Close Price")  # 英語のみ
     plt.tight_layout()
     buf = BytesIO()
     plt.savefig(buf, format='png')
@@ -115,7 +122,7 @@ def fetch_ohlcv(symbol):
     return closes
 
 def main():
-    now = datetime.utcnow() + timedelta(hours=9)  # JSTに変換
+    now = get_jst_now()
     if not (20 <= now.hour < 23 or (now.hour == 23 and now.minute <= 30)):
         print(f"[INFO] 実行時間外のためスキップ（現在: {now.strftime('%H:%M')} JST）")
         return
