@@ -11,15 +11,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib
 
-# --- フォント設定（日本語警告回避用） ---
+# --- フォント設定（日本語警告回避） ---
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 
-# --- 環境変数 ---
+# --- 環境変数読み込み ---
 openai.api_key = os.getenv("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# --- 通知履歴ファイル ---
 NOTIFIED_FILE = "notified_pairs.json"
 
 def get_jst_now():
@@ -105,40 +104,53 @@ def send_telegram_image(image_buf, caption):
 
 def fetch_okx_symbols():
     url = "https://www.okx.com/api/v5/market/tickers?instType=SWAP"
-    res = requests.get(url).json()
+    try:
+        res = requests.get(url).json()
+    except Exception as e:
+        print("[ERROR] OKXシンボル取得に失敗:", e, flush=True)
+        return []
     if res.get("code") != "0":
-        print("[ERROR] OKXデータ取得失敗", res)
+        print("[ERROR] OKXデータエラー", res, flush=True)
         return []
     return [item for item in res["data"] if item["instId"].endswith("-USDT-SWAP")]
 
 def fetch_ohlcv(symbol):
     url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
-    res = requests.get(url).json()
+    try:
+        res = requests.get(url).json()
+    except Exception as e:
+        print(f"[ERROR] OHLCV取得失敗（{symbol}）:", e, flush=True)
+        return []
     if res.get("code") != "0":
-        print(f"[ERROR] OHLCV取得失敗 {symbol}", res)
+        print(f"[ERROR] OHLCVデータエラー {symbol}:", res, flush=True)
         return []
     closes = [float(c[4]) for c in reversed(res["data"])]
     return closes
 
 def main():
     now = get_jst_now()
+    print(f"[INFO] main() 開始：{now.strftime('%Y-%m-%d %H:%M:%S')} JST", flush=True)
+
     if not (
         (now.hour == 20 and now.minute >= 30) or
         (21 <= now.hour <= 23) or
         (now.hour == 0 and now.minute <= 30)
     ):
-        print(f"[INFO] 実行時間外のためスキップ（現在: {now.strftime('%H:%M')} JST）")
+        print(f"[INFO] 実行時間外のためスキップ（現在: {now.strftime('%H:%M')} JST）", flush=True)
         return
 
-    print(f"[INFO] 処理開始（現在: {now.strftime('%H:%M')} JST）")
-
     notified_today = load_notified()
+    print(f"[INFO] 今日すでに通知済みの銘柄数: {len(notified_today)}", flush=True)
+
     symbols = fetch_okx_symbols()
+    print(f"[INFO] OKXから取得したシンボル数: {len(symbols)}", flush=True)
 
     rsi_results = []
+    skipped_symbols = 0
     for item in symbols:
         symbol = item["instId"]
         if symbol in notified_today:
+            skipped_symbols += 1
             continue
         prices = fetch_ohlcv(symbol)
         if len(prices) < 20:
@@ -147,21 +159,23 @@ def main():
         if rsi > 70:
             rsi_results.append((symbol, rsi, prices))
 
-    if not rsi_results:
-        print("[INFO] RSIが70超の銘柄なし")
-        return
+    print(f"[INFO] 通知済みで除外した銘柄数: {skipped_symbols}", flush=True)
+    print(f"[INFO] RSI>70 の銘柄数: {len(rsi_results)}", flush=True)
 
-    print("[INFO] RSI70超銘柄一覧：")
-    for sym, rsi_val, _ in sorted(rsi_results, key=lambda x: x[1], reverse=True)[:10]:
-        print(f" - {sym}: RSI={rsi_val}")
+    if not rsi_results:
+        print("[INFO] RSIが70を超える銘柄が見つかりませんでした。", flush=True)
+        return
 
     rsi_results.sort(key=lambda x: x[1], reverse=True)
     top3 = rsi_results[:3]
+
     newly_notified = set()
 
     for symbol, rsi, prices in top3:
+        print(f"[INFO] GPT分析中: {symbol} (RSI={rsi})", flush=True)
         result = analyze_with_gpt(prices, symbol)
-        print(f"[GPT分析結果] {symbol}\n{result}\n")
+        print(f"[GPT分析結果] {symbol}\n{result}\n", flush=True)
+
         if "利益の出る確率" in result:
             try:
                 percent = int(result.split("利益の出る確率：")[-1].replace("%", "").strip())
@@ -170,35 +184,34 @@ def main():
                     chart = generate_chart(prices, symbol)
                     send_telegram_image(chart, caption)
                     newly_notified.add(symbol)
-                    print(f"[通知] {symbol} をTelegramに通知しました（利益確率 {percent}%）")
+                    print(f"[通知済] {symbol} - 利益確率 {percent}%", flush=True)
                 else:
-                    print(f"[スキップ] {symbol} 利益確率 {percent}% は80%未満")
+                    print(f"[非通知] {symbol} - 利益確率 {percent}%（基準未満）", flush=True)
             except Exception as e:
-                print(f"[ERROR] GPT結果解析エラー: {e}")
-                continue
+                print(f"[ERROR] GPT結果の解析失敗: {e}", flush=True)
 
     notified_today |= newly_notified
     save_notified(notified_today)
 
     if newly_notified:
         send_telegram_image(generate_chart([0], "CONFIRM"), f"✅ Bot処理完了：{len(newly_notified)}件通知")
-        print(f"[INFO] 通知完了：{len(newly_notified)}件")
+        print(f"[INFO] Telegram通知完了：{len(newly_notified)}件", flush=True)
     else:
-        print("[INFO] 通知対象なし：Telegram通知スキップ")
+        print("[INFO] 通知対象がなかったためTelegram通知なし", flush=True)
 
 def schedule_loop():
     while True:
         try:
-            print("[スケジューラー] main() を実行します")
+            print("[スケジューラー] main() を実行します", flush=True)
             main()
         except Exception as e:
-            print("[ERROR] main処理中にエラー:", e)
+            print("[ERROR] main() 実行中に例外:", e, flush=True)
 
         for i in range(10, 0, -1):
-            print(f"[スケジューラー] 次の実行まであと {i} 分...")
+            print(f"[スケジューラー] 次回実行まであと {i} 分", flush=True)
             time.sleep(60)
 
-# --- Flask サーバー起動 ---
+# Flaskサーバー
 app = Flask(__name__)
 
 @app.route("/")
