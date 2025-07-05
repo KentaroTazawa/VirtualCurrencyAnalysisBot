@@ -4,3 +4,4 @@ openai>=1.0.0
 matplotlib
 Pillow
 python-dotenv
+numpy
