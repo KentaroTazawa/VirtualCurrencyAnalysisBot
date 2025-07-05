@@ -1,129 +1,178 @@
-import requests
 import os
 import json
-import datetime
+import time
+import requests
+from datetime import datetime
+from flask import Flask
 import openai
-import pandas as pd
-import matplotlib.pyplot as plt
+from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
-from telegram import Bot
+import matplotlib.pyplot as plt
+import numpy as np
 
-# 環境変数
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# --- 環境変数読み込み ---
+openai.api_key = os.getenv("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-openai.api_key = OPENAI_API_KEY
 
-# 通知済み銘柄ファイル
-NOTIFIED_FILE = "notified_today.json"
+# --- 通知履歴ファイル ---
+NOTIFIED_FILE = "notified_pairs.json"
 
-def load_notified_symbols():
-    today = str(datetime.date.today())
+def load_notified():
+    today = datetime.now().strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
-        with open(NOTIFIED_FILE, 'r') as f:
+        with open(NOTIFIED_FILE, "r") as f:
             data = json.load(f)
-        if data.get("date") == today:
-            return set(data.get("symbols", []))
+        return set(data.get(today, []))
     return set()
 
-def save_notified_symbols(symbols):
-    today = str(datetime.date.today())
-    with open(NOTIFIED_FILE, 'w') as f:
-        json.dump({"date": today, "symbols": list(symbols)}, f)
+def save_notified(pairs):
+    today = datetime.now().strftime("%Y-%m-%d")
+    if os.path.exists(NOTIFIED_FILE):
+        with open(NOTIFIED_FILE, "r") as f:
+            data = json.load(f)
+    else:
+        data = {}
+    data[today] = list(pairs)
+    with open(NOTIFIED_FILE, "w") as f:
+        json.dump(data, f)
 
-def get_usdt_swap_symbols():
-    url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
-    res = requests.get(url).json()
-    symbols = [item["instId"] for item in res["data"] if item["instId"].endswith("-USDT-SWAP")]
-    return symbols
+# --- RSI計算 ---
+def calculate_rsi(prices, period=14):
+    prices = np.array(prices)
+    deltas = np.diff(prices)
+    seed = deltas[:period]
+    up = seed[seed >= 0].sum() / period
+    down = -seed[seed < 0].sum() / period
+    rs = up / down if down != 0 else 0
+    rsi = 100 - 100 / (1 + rs)
+    return round(rsi, 2)
 
-def fetch_ohlcv(inst_id, bar="15m", limit=100):
-    url = f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
-    res = requests.get(url).json()
-    if "data" not in res:
-        return []
-    return list(reversed(res["data"]))
-
-def calculate_rsi(closes, period=14):
-    delta = pd.Series(closes).diff()
-    gain = delta.clip(lower=0).rolling(window=period).mean()
-    loss = -delta.clip(upper=0).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1]
-
-def generate_chart(inst_id, closes):
-    plt.figure(figsize=(8, 3))
-    plt.plot(closes, label=inst_id)
-    plt.title(f"{inst_id} 15m Close")
-    plt.xlabel("Time")
-    plt.ylabel("Price")
-    plt.grid(True)
-    plt.legend()
+# --- チャート画像作成 ---
+def generate_chart(prices, symbol):
+    plt.figure(figsize=(6,3))
+    plt.plot(prices, color='red')
+    plt.title(f"{symbol} 15m Close Price")
+    plt.tight_layout()
     buf = BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
     return buf
 
-def gpt_analysis(inst_id, closes):
+# --- GPT分析 ---
+def analyze_with_gpt(prices, symbol):
     prompt = f"""
-以下は仮想通貨{inst_id}の15分足終値データ（最新から過去へ100本）です：
-{', '.join([str(c) for c in closes])}
+以下は{symbol}の15分足の終値データです：
+{', '.join(map(str, prices))}
 
-このチャートを分析して、「今ショートを仕掛けるべきか？」を判断し、
-利確ライン（TP）、損切ライン（SL）、利益が出る確率（%）を提案してください。
-
+このチャートを分析して、
+・ショートすべきか（はい/いいえ）
+・理由
+・利確ライン（TP）
+・損切りライン（SL）
+・利益の出る確率（％）
+を出力してください。
 形式：
-・ショートすべきか：はい / いいえ
+・ショートすべきか：
 ・理由：
-・利確目安（TP）：
-・損切目安（SL）：
-・利益が出る確率（%）：
+・利確ライン（TP）：
+・損切ライン（SL）：
+・利益の出る確率：
 """
     try:
         response = openai.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "あなたは熟練のトレーダーAIです。"},
+                {"role": "system", "content": "あなたは優秀なトレードアナリストAIです。"},
                 {"role": "user", "content": prompt}
             ]
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content.strip()
     except Exception as e:
         return f"⚠️ GPTエラー: {e}"
 
+# --- Telegram通知 ---
+def send_telegram_image(image_buf, caption):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    files = {"photo": ("chart.png", image_buf)}
+    data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption}
+    response = requests.post(url, files=files, data=data)
+    return response.json()
+
+# --- OKXから銘柄取得 ---
+def fetch_okx_symbols():
+    url = "https://www.okx.com/api/v5/market/tickers?instType=SWAP"
+    res = requests.get(url).json()
+    if res.get("code") != "0":
+        print("[ERROR] OKXデータ取得失敗", res)
+        return []
+    return [item for item in res["data"] if item["instId"].endswith("-USDT-SWAP")]
+
+# --- 15分足データ取得 ---
+def fetch_ohlcv(symbol):
+    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
+    res = requests.get(url).json()
+    if res.get("code") != "0":
+        print(f"[ERROR] OHLCV取得失敗 {symbol}", res)
+        return []
+    closes = [float(c[4]) for c in reversed(res["data"])]
+    return closes
+
+# --- メイン処理 ---
 def main():
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    notified_symbols = load_notified_symbols()
-    symbols = get_usdt_swap_symbols()
+    now = datetime.now()
+    if not (20 <= now.hour < 23 or (now.hour == 23 and now.minute <= 30)):
+        print("[INFO] 実行時間外のためスキップ")
+        return
 
-    rsi_data = []
-    for sym in symbols:
-        if sym in notified_symbols:
+    notified_today = load_notified()
+    symbols = fetch_okx_symbols()
+
+    rsi_results = []
+    for item in symbols:
+        symbol = item["instId"]
+        if symbol in notified_today:
             continue
-        ohlcv = fetch_ohlcv(sym)
-        if len(ohlcv) < 20:
+        prices = fetch_ohlcv(symbol)
+        if len(prices) < 20:
             continue
-        closes = [float(c[4]) for c in ohlcv]
-        rsi = calculate_rsi(closes)
+        rsi = calculate_rsi(prices)
         if rsi > 70:
-            rsi_data.append((sym, rsi, closes))
+            rsi_results.append((symbol, rsi, prices))
 
-    top_rsi = sorted(rsi_data, key=lambda x: x[1], reverse=True)[:3]
+    # RSI上位3件のみGPT分析
+    rsi_results.sort(key=lambda x: x[1], reverse=True)
+    top3 = rsi_results[:3]
+    newly_notified = set()
 
-    for sym, rsi_val, closes in top_rsi:
-        result = gpt_analysis(sym, closes)
-        if "利益が出る確率（%）：" in result:
+    for symbol, rsi, prices in top3:
+        result = analyze_with_gpt(prices, symbol)
+        print(f"GPT結果: {symbol}\n{result}\n")
+        if "利益の出る確率" in result:
             try:
-                percent = int(result.split("利益が出る確率（%）：")[-1].strip().replace("%", ""))
+                percent = int(result.split("利益の出る確率：")[-1].replace("%", "").strip())
                 if percent >= 80:
-                    img = generate_chart(sym, closes)
-                    bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=img, caption=f"📉 {sym} ショート分析結果（OKX 15分足）\n\n{result}")
-                    notified_symbols.add(sym)
+                    caption = f"📉 {symbol} ショート分析結果（OKX 15分足）\n\n{result}"
+                    chart = generate_chart(prices, symbol)
+                    send_telegram_image(chart, caption)
+                    newly_notified.add(symbol)
             except:
-                pass
+                continue
 
-    save_notified_symbols(notified_symbols)
+    notified_today |= newly_notified
+    save_notified(notified_today)
+
+    # 実行確認通知
+    send_telegram_image(generate_chart([0], "確認"), "✅ Bot処理完了：{0}件通知".format(len(newly_notified)))
+
+# --- Flaskサーバー起動 ---
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return "OK"
 
 if __name__ == "__main__":
     main()
+    app.run(host="0.0.0.0", port=10000)
+
