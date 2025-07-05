@@ -11,10 +11,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib
 
-# --- フォント設定（日本語警告回避） ---
+# フォント設定（日本語の警告回避）
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 
-# --- 環境変数読み込み ---
+# 環境変数
 openai.api_key = os.getenv("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -85,7 +85,7 @@ def analyze_with_gpt(prices, symbol):
 """
     try:
         response = openai.chat.completions.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "あなたは優秀なトレードアナリストAIです。"},
                 {"role": "user", "content": prompt}
@@ -211,7 +211,6 @@ def schedule_loop():
             print(f"[スケジューラー] 次回実行まであと {i} 分", flush=True)
             time.sleep(60)
 
-# Flaskサーバー
 app = Flask(__name__)
 
 @app.route("/")
