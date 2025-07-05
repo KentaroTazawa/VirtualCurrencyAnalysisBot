@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import threading
 import requests
 from datetime import datetime
 from flask import Flask
@@ -56,6 +57,7 @@ def generate_chart(prices, symbol):
     plt.tight_layout()
     buf = BytesIO()
     plt.savefig(buf, format='png')
+    plt.close()
     buf.seek(0)
     return buf
 
@@ -163,7 +165,16 @@ def main():
     save_notified(notified_today)
 
     # 実行確認通知
-    send_telegram_image(generate_chart([0], "確認"), "✅ Bot処理完了：{0}件通知".format(len(newly_notified)))
+    send_telegram_image(generate_chart([0], "確認"), f"✅ Bot処理完了：{len(newly_notified)}件通知")
+
+# --- 10分ごとのループ処理 ---
+def schedule_loop():
+    while True:
+        try:
+            main()
+        except Exception as e:
+            print("[ERROR] main処理中にエラー:", e)
+        time.sleep(600)  # 10分ごとに実行
 
 # --- Flaskサーバー起動 ---
 app = Flask(__name__)
@@ -173,6 +184,5 @@ def index():
     return "OK"
 
 if __name__ == "__main__":
-    main()
+    threading.Thread(target=schedule_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=10000)
-
