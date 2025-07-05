@@ -3,10 +3,10 @@ import json
 import time
 import threading
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask
 import openai
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 from io import BytesIO
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,7 +20,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 NOTIFIED_FILE = "notified_pairs.json"
 
 def load_notified():
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")  # JST
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE, "r") as f:
             data = json.load(f)
@@ -28,7 +28,7 @@ def load_notified():
     return set()
 
 def save_notified(pairs):
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d")  # JST
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE, "r") as f:
             data = json.load(f)
@@ -38,7 +38,6 @@ def save_notified(pairs):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
-# --- RSI計算 ---
 def calculate_rsi(prices, period=14):
     prices = np.array(prices)
     deltas = np.diff(prices)
@@ -49,7 +48,6 @@ def calculate_rsi(prices, period=14):
     rsi = 100 - 100 / (1 + rs)
     return round(rsi, 2)
 
-# --- チャート画像作成 ---
 def generate_chart(prices, symbol):
     plt.figure(figsize=(6,3))
     plt.plot(prices, color='red')
@@ -61,7 +59,6 @@ def generate_chart(prices, symbol):
     buf.seek(0)
     return buf
 
-# --- GPT分析 ---
 def analyze_with_gpt(prices, symbol):
     prompt = f"""
 以下は{symbol}の15分足の終値データです：
@@ -93,7 +90,6 @@ def analyze_with_gpt(prices, symbol):
     except Exception as e:
         return f"⚠️ GPTエラー: {e}"
 
-# --- Telegram通知 ---
 def send_telegram_image(image_buf, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     files = {"photo": ("chart.png", image_buf)}
@@ -101,7 +97,6 @@ def send_telegram_image(image_buf, caption):
     response = requests.post(url, files=files, data=data)
     return response.json()
 
-# --- OKXから銘柄取得 ---
 def fetch_okx_symbols():
     url = "https://www.okx.com/api/v5/market/tickers?instType=SWAP"
     res = requests.get(url).json()
@@ -110,7 +105,6 @@ def fetch_okx_symbols():
         return []
     return [item for item in res["data"] if item["instId"].endswith("-USDT-SWAP")]
 
-# --- 15分足データ取得 ---
 def fetch_ohlcv(symbol):
     url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     res = requests.get(url).json()
@@ -120,12 +114,13 @@ def fetch_ohlcv(symbol):
     closes = [float(c[4]) for c in reversed(res["data"])]
     return closes
 
-# --- メイン処理 ---
 def main():
-    now = datetime.now()
+    now = datetime.utcnow() + timedelta(hours=9)  # JSTに変換
     if not (20 <= now.hour < 23 or (now.hour == 23 and now.minute <= 30)):
-        print("[INFO] 実行時間外のためスキップ")
+        print(f"[INFO] 実行時間外のためスキップ（現在: {now.strftime('%H:%M')} JST）")
         return
+
+    print(f"[INFO] 処理開始（現在: {now.strftime('%H:%M')} JST）")
 
     notified_today = load_notified()
     symbols = fetch_okx_symbols()
@@ -142,7 +137,6 @@ def main():
         if rsi > 70:
             rsi_results.append((symbol, rsi, prices))
 
-    # RSI上位3件のみGPT分析
     rsi_results.sort(key=lambda x: x[1], reverse=True)
     top3 = rsi_results[:3]
     newly_notified = set()
@@ -164,10 +158,8 @@ def main():
     notified_today |= newly_notified
     save_notified(notified_today)
 
-    # 実行確認通知
     send_telegram_image(generate_chart([0], "確認"), f"✅ Bot処理完了：{len(newly_notified)}件通知")
 
-# --- 10分ごとのループ処理 ---
 def schedule_loop():
     while True:
         try:
@@ -176,7 +168,6 @@ def schedule_loop():
             print("[ERROR] main処理中にエラー:", e)
         time.sleep(600)  # 10分ごとに実行
 
-# --- Flaskサーバー起動 ---
 app = Flask(__name__)
 
 @app.route("/")
