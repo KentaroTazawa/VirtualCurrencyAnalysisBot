@@ -15,7 +15,7 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram送信エラー: {e}")
 
-def get_top_movers_okx(limit=30):
+def get_top_movers_okx(limit=10):
     url = "https://www.okx.com/api/v5/market/tickers"
     params = {"instType": "SWAP"}
     res = requests.get(url, params=params)
@@ -68,7 +68,7 @@ def send_to_gpt(closes, symbol="BTC-USDT"):
 """
     try:
         response = openai.chat.completions.create(
-            model="gpt-4o-mini",  # 無料プランで高精度・低コスト
+            model="gpt-3.5-turbo",  # gpt-4より安価で無料枠向き
             messages=[
                 {"role": "system", "content": "あなたは熟練のトレーダーAIです。"},
                 {"role": "user", "content": prompt}
@@ -82,11 +82,11 @@ def send_to_gpt(closes, symbol="BTC-USDT"):
 def main():
     send_telegram("🚀 Bot起動確認：main.py 実行スタート ✅")
     try:
-        top_symbols = get_top_movers_okx(limit=30)
+        top_symbols = get_top_movers_okx(limit=10)
         send_telegram(f"📊 対象銘柄数: {len(top_symbols)}")
         for symbol in top_symbols:
             try:
-                time.sleep(1.2)  # 無料枠＆レート制限対策
+                time.sleep(3)  # GPT呼び出しごとに3秒待機
                 closes = fetch_okx_closes(symbol=symbol, interval="15m", limit=50)
                 result = send_to_gpt(closes, symbol=symbol)
                 send_telegram(f"📉 {symbol} ショート分析結果（OKX 15分足）\n\n{result}")
