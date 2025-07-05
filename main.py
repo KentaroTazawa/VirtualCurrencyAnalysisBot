@@ -8,10 +8,18 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === 急変動上位30通貨を取得（change24hは手計算） ===
+# === Telegram通知関数 ===
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+    except Exception as e:
+        print(f"Telegram送信エラー: {e}")
+
+# === 急変動上位通貨を取得（手動で%変動計算） ===
 def get_top_movers_okx(limit=30):
     url = "https://www.okx.com/api/v5/market/tickers"
-    params = {"instType": "SWAP"}  # 無期限先物
+    params = {"instType": "SWAP"}
     res = requests.get(url, params=params)
 
     if res.status_code != 200:
@@ -36,7 +44,7 @@ def get_top_movers_okx(limit=30):
     sorted_tickers = sorted(tickers_with_change, key=lambda x: x[1], reverse=True)
     return [t[0] for t in sorted_tickers[:limit]]
 
-# === 15分足の終値データ取得 ===
+# === OKXから15分足終値データ取得 ===
 def fetch_okx_closes(symbol="BTC-USDT", interval="15m", limit=50):
     url = "https://www.okx.com/api/v5/market/candles"
     params = {"instId": symbol, "bar": interval, "limit": limit}
@@ -50,7 +58,7 @@ def fetch_okx_closes(symbol="BTC-USDT", interval="15m", limit=50):
     closes.reverse()
     return closes
 
-# === GPTに送信して分析 ===
+# === GPTにチャートを送って分析 ===
 def send_to_gpt(closes, symbol="BTC-USDT"):
     text = ", ".join([f"{c:.2f}" for c in closes])
     prompt = f"""
@@ -79,21 +87,15 @@ def send_to_gpt(closes, symbol="BTC-USDT"):
     except Exception as e:
         return f"⚠️ GPTエラー: {e}"
 
-# === Telegram通知 ===
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
-    except Exception as e:
-        print(f"Telegram送信エラー: {e}")
-
 # === メイン処理 ===
 def main():
+    send_telegram("🚀 Bot起動確認：main.py 実行スタート ✅")
+
     try:
         top_symbols = get_top_movers_okx(limit=30)
         for symbol in top_symbols:
             try:
-                time.sleep(0.4)  # レート制限対策
+                time.sleep(0.4)  # OKXレート制限対策
                 closes = fetch_okx_closes(symbol=symbol, interval="15m", limit=50)
                 result = send_to_gpt(closes, symbol=symbol)
                 send_telegram(f"📉 {symbol} ショート分析結果（OKX 15分足）\n\n{result}")
@@ -102,6 +104,9 @@ def main():
     except Exception as e:
         send_telegram(f"❗️Bot全体エラー: {e}")
         print(f"全体エラー: {e}")
+    finally:
+        send_telegram("✅ Bot処理完了しました（main.py 終了）")
 
+# === 実行 ===
 if __name__ == "__main__":
     main()
