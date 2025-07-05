@@ -8,10 +8,10 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === 急変動上位30通貨を取得（change24hを手計算） ===
+# === 急変動上位30通貨を取得（change24hは手計算） ===
 def get_top_movers_okx(limit=30):
     url = "https://www.okx.com/api/v5/market/tickers"
-    params = {"instType": "SWAP"}  # 無期限先物を対象
+    params = {"instType": "SWAP"}  # 無期限先物
     res = requests.get(url, params=params)
 
     if res.status_code != 200:
@@ -23,11 +23,11 @@ def get_top_movers_okx(limit=30):
     for t in data:
         try:
             if not t["instId"].endswith("-USDT"):
-                continue  # USDT建て以外は除外
+                continue
             last = float(t["last"])
             open_ = float(t["open24h"])
             if open_ == 0:
-                continue  # ゼロ割回避
+                continue
             change_pct = (last - open_) / open_ * 100
             tickers_with_change.append((t["instId"], abs(change_pct)))
         except Exception:
@@ -36,7 +36,7 @@ def get_top_movers_okx(limit=30):
     sorted_tickers = sorted(tickers_with_change, key=lambda x: x[1], reverse=True)
     return [t[0] for t in sorted_tickers[:limit]]
 
-# === ローソク足データ取得（15分足） ===
+# === 15分足の終値データ取得 ===
 def fetch_okx_closes(symbol="BTC-USDT", interval="15m", limit=50):
     url = "https://www.okx.com/api/v5/market/candles"
     params = {"instId": symbol, "bar": interval, "limit": limit}
@@ -47,10 +47,10 @@ def fetch_okx_closes(symbol="BTC-USDT", interval="15m", limit=50):
 
     candles = res.json().get("data", [])
     closes = [float(c[4]) for c in candles]
-    closes.reverse()  # 最新を最後にする（GPTにわかりやすく）
+    closes.reverse()
     return closes
 
-# === GPTに分析を依頼 ===
+# === GPTに送信して分析 ===
 def send_to_gpt(closes, symbol="BTC-USDT"):
     text = ", ".join([f"{c:.2f}" for c in closes])
     prompt = f"""
@@ -87,13 +87,13 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram送信エラー: {e}")
 
-# === メイン関数 ===
+# === メイン処理 ===
 def main():
     try:
         top_symbols = get_top_movers_okx(limit=30)
         for symbol in top_symbols:
             try:
-                time.sleep(0.4)  # レート制限回避（OKXは1秒あたり2〜5回程度まで）
+                time.sleep(0.4)  # レート制限対策
                 closes = fetch_okx_closes(symbol=symbol, interval="15m", limit=50)
                 result = send_to_gpt(closes, symbol=symbol)
                 send_telegram(f"📉 {symbol} ショート分析結果（OKX 15分足）\n\n{result}")
