@@ -11,8 +11,13 @@ def fetch_ohlcv(symbol="BTCUSDT", interval="15m", limit=50):
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     res = requests.get(url, params=params).json()
+    
+    if not isinstance(res, list):
+        raise ValueError(f"Binance APIエラー: {res}")
+    
     closes = [float(c[4]) for c in res]
     return closes
+
 
 def send_to_gpt(closes):
     text = ", ".join([f"{c:.2f}" for c in closes])
