@@ -11,19 +11,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib
 
-# フォント設定（日本語の警告回避）
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 
-# 環境変数
+# --- 環境変数 ---
 openai.api_key = os.getenv("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 NOTIFIED_FILE = "notified_pairs.json"
 
+# --- JST時間取得 ---
 def get_jst_now():
     return datetime.now(timezone.utc) + timedelta(hours=9)
 
+# --- 通知履歴ロード・保存 ---
 def load_notified():
     today = get_jst_now().strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
@@ -43,6 +43,7 @@ def save_notified(pairs):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
+# --- RSI計算 ---
 def calculate_rsi(prices, period=14):
     prices = np.array(prices)
     deltas = np.diff(prices)
@@ -53,6 +54,7 @@ def calculate_rsi(prices, period=14):
     rsi = 100 - 100 / (1 + rs)
     return round(rsi, 2)
 
+# --- チャート画像生成 ---
 def generate_chart(prices, symbol):
     plt.figure(figsize=(6,3))
     plt.plot(prices, color='red')
@@ -64,6 +66,7 @@ def generate_chart(prices, symbol):
     buf.seek(0)
     return buf
 
+# --- GPT分析 ---
 def analyze_with_gpt(prices, symbol):
     prompt = f"""
 以下は{symbol}の15分足の終値データです：
@@ -73,7 +76,7 @@ def analyze_with_gpt(prices, symbol):
 ・ショートすべきか（はい/いいえ）
 ・理由
 ・利確ライン（TP）
-・損切りライン（SL）
+・損切ライン（SL）
 ・利益の出る確率（％）
 を出力してください。
 形式：
@@ -93,8 +96,10 @@ def analyze_with_gpt(prices, symbol):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"⚠️ GPTエラー: {e}"
+        print(f"[GPTエラー] {symbol} - {e}", flush=True)
+        return None
 
+# --- Telegram送信 ---
 def send_telegram_image(image_buf, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     files = {"photo": ("chart.png", image_buf)}
@@ -102,6 +107,7 @@ def send_telegram_image(image_buf, caption):
     response = requests.post(url, files=files, data=data)
     return response.json()
 
+# --- シンボル取得 ---
 def fetch_okx_symbols():
     url = "https://www.okx.com/api/v5/market/tickers?instType=SWAP"
     try:
@@ -114,6 +120,7 @@ def fetch_okx_symbols():
         return []
     return [item for item in res["data"] if item["instId"].endswith("-USDT-SWAP")]
 
+# --- OHLCV取得 ---
 def fetch_ohlcv(symbol):
     url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     try:
@@ -127,6 +134,7 @@ def fetch_ohlcv(symbol):
     closes = [float(c[4]) for c in reversed(res["data"])]
     return closes
 
+# --- メイン処理 ---
 def main():
     now = get_jst_now()
     print(f"[INFO] main() 開始：{now.strftime('%Y-%m-%d %H:%M:%S')} JST", flush=True)
@@ -146,11 +154,9 @@ def main():
     print(f"[INFO] OKXから取得したシンボル数: {len(symbols)}", flush=True)
 
     rsi_results = []
-    skipped_symbols = 0
     for item in symbols:
         symbol = item["instId"]
         if symbol in notified_today:
-            skipped_symbols += 1
             continue
         prices = fetch_ohlcv(symbol)
         if len(prices) < 20:
@@ -159,7 +165,6 @@ def main():
         if rsi > 70:
             rsi_results.append((symbol, rsi, prices))
 
-    print(f"[INFO] 通知済みで除外した銘柄数: {skipped_symbols}", flush=True)
     print(f"[INFO] RSI>70 の銘柄数: {len(rsi_results)}", flush=True)
 
     if not rsi_results:
@@ -168,12 +173,16 @@ def main():
 
     rsi_results.sort(key=lambda x: x[1], reverse=True)
     top3 = rsi_results[:3]
-
     newly_notified = set()
 
     for symbol, rsi, prices in top3:
         print(f"[INFO] GPT分析中: {symbol} (RSI={rsi})", flush=True)
         result = analyze_with_gpt(prices, symbol)
+
+        if result is None:
+            print(f"[スキップ] {symbol} はGPTエラーのためスキップ", flush=True)
+            continue
+
         print(f"[GPT分析結果] {symbol}\n{result}\n", flush=True)
 
         if "利益の出る確率" in result:
@@ -199,6 +208,7 @@ def main():
     else:
         print("[INFO] 通知対象がなかったためTelegram通知なし", flush=True)
 
+# --- 定期実行スレッド ---
 def schedule_loop():
     while True:
         try:
@@ -211,6 +221,7 @@ def schedule_loop():
             print(f"[スケジューラー] 次回実行まであと {i} 分", flush=True)
             time.sleep(60)
 
+# --- Flaskサーバー ---
 app = Flask(__name__)
 
 @app.route("/")
