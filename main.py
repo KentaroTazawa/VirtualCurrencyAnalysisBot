@@ -16,33 +16,42 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram送信エラー: {e}")
 
-# === 急変動上位通貨を取得（手動で%変動計算） ===
+# === 急変動上位通貨を取得（OKX SWAP・USDT建て・変動率順） ===
 def get_top_movers_okx(limit=30):
     url = "https://www.okx.com/api/v5/market/tickers"
-    params = {"instType": "SWAP"}
+    params = {"instType": "SWAP"}  # SPOTに変えてもOK
     res = requests.get(url, params=params)
 
     if res.status_code != 200:
         raise ValueError(f"OKX ticker取得失敗: {res.status_code} / {res.text}")
 
     data = res.json().get("data", [])
+    print(f"取得したティッカー数: {len(data)}")
+
     tickers_with_change = []
 
     for t in data:
         try:
-            if not t["instId"].endswith("-USDT"):
-                continue
+            instId = t.get("instId", "")
+            if "-USDT" not in instId:
+                continue  # USDT建てだけに絞る
+
             last = float(t["last"])
             open_ = float(t["open24h"])
             if open_ == 0:
                 continue
             change_pct = (last - open_) / open_ * 100
-            tickers_with_change.append((t["instId"], abs(change_pct)))
-        except Exception:
+            tickers_with_change.append((instId, abs(change_pct)))
+        except Exception as e:
+            print(f"ティッカー処理エラー: {e}")
             continue
 
+    print(f"有効な変動ペア数: {len(tickers_with_change)}")
+
     sorted_tickers = sorted(tickers_with_change, key=lambda x: x[1], reverse=True)
-    return [t[0] for t in sorted_tickers[:limit]]
+    top = [t[0] for t in sorted_tickers[:limit]]
+    print(f"上位シンボル（変動率順）: {top}")
+    return top
 
 # === OKXから15分足終値データ取得 ===
 def fetch_okx_closes(symbol="BTC-USDT", interval="15m", limit=50):
