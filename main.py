@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib
 
-# --- フォント警告回避（英語のみ使用） ---
-matplotlib.rcParams['font.family'] = 'DejaVu Sans'  # 日本語回避のため英語フォント使用
+# --- 英語フォント指定（日本語警告防止） ---
+matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 
 # --- 環境変数読み込み ---
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -58,7 +58,7 @@ def calculate_rsi(prices, period=14):
 def generate_chart(prices, symbol):
     plt.figure(figsize=(6,3))
     plt.plot(prices, color='red')
-    plt.title(f"{symbol} 15m Close Price")  # 英語のみ
+    plt.title(f"{symbol} 15m Close Price")  # 英語のみ（日本語警告回避）
     plt.tight_layout()
     buf = BytesIO()
     plt.savefig(buf, format='png')
@@ -165,7 +165,11 @@ def main():
     notified_today |= newly_notified
     save_notified(notified_today)
 
-    send_telegram_image(generate_chart([0], "確認"), f"✅ Bot処理完了：{len(newly_notified)}件通知")
+    # 通知対象があるときのみTelegramに処理完了通知を送信
+    if newly_notified:
+        send_telegram_image(generate_chart([0], "CONFIRM"), f"✅ Bot処理完了：{len(newly_notified)}件通知")
+    else:
+        print("[INFO] 通知対象なし：Telegram通知スキップ")
 
 def schedule_loop():
     while True:
