@@ -3,6 +3,7 @@ import os
 import openai
 import time
 
+# 環境変数から読み込み
 openai.api_key = os.getenv("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -21,7 +22,6 @@ def get_top_movers_okx(limit=30):
     if res.status_code != 200:
         raise ValueError(f"OKX ticker取得失敗: {res.status_code} / {res.text}")
     data = res.json().get("data", [])
-    print(f"取得したティッカー数: {len(data)}")
     tickers_with_change = []
     for t in data:
         try:
@@ -37,11 +37,8 @@ def get_top_movers_okx(limit=30):
         except Exception as e:
             print(f"ティッカー処理エラー: {e}")
             continue
-    print(f"有効な変動ペア数: {len(tickers_with_change)}")
     sorted_tickers = sorted(tickers_with_change, key=lambda x: x[1], reverse=True)
-    top = [t[0] for t in sorted_tickers[:limit]]
-    print(f"上位シンボル（変動率順）: {top}")
-    return top
+    return [t[0] for t in sorted_tickers[:limit]]
 
 def fetch_okx_closes(symbol="BTC-USDT", interval="15m", limit=50):
     url = "https://www.okx.com/api/v5/market/candles"
@@ -51,7 +48,7 @@ def fetch_okx_closes(symbol="BTC-USDT", interval="15m", limit=50):
         raise ValueError(f"OKXローソク足取得失敗: {res.status_code} / {res.text}")
     candles = res.json().get("data", [])
     closes = [float(c[4]) for c in candles]
-    closes.reverse()
+    closes.reverse()  # 古い順に並び替え
     return closes
 
 def send_to_gpt(closes, symbol="BTC-USDT"):
@@ -71,12 +68,12 @@ def send_to_gpt(closes, symbol="BTC-USDT"):
 """
     try:
         response = openai.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o-mini",  # 無料プランで高精度・低コスト
             messages=[
                 {"role": "system", "content": "あなたは熟練のトレーダーAIです。"},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.5,
+            temperature=0.4
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -86,24 +83,17 @@ def main():
     send_telegram("🚀 Bot起動確認：main.py 実行スタート ✅")
     try:
         top_symbols = get_top_movers_okx(limit=30)
-        print(f"対象シンボル数: {len(top_symbols)}")
+        send_telegram(f"📊 対象銘柄数: {len(top_symbols)}")
         for symbol in top_symbols:
             try:
-                print(f"処理中: {symbol}")
-                time.sleep(0.4)
+                time.sleep(1.2)  # 無料枠＆レート制限対策
                 closes = fetch_okx_closes(symbol=symbol, interval="15m", limit=50)
-                print(f"{symbol} のローソク足取得成功")
                 result = send_to_gpt(closes, symbol=symbol)
-                print(f"{symbol} のGPT分析完了")
                 send_telegram(f"📉 {symbol} ショート分析結果（OKX 15分足）\n\n{result}")
             except Exception as e:
-                error_msg = f"⚠️ {symbol} 分析エラー: {e}"
-                print(error_msg)
-                send_telegram(error_msg)
+                send_telegram(f"⚠️ {symbol} 分析エラー: {e}")
     except Exception as e:
-        error_msg = f"❗️Bot全体エラー: {e}"
-        print(error_msg)
-        send_telegram(error_msg)
+        send_telegram(f"❗️Bot全体エラー: {e}")
     finally:
         send_telegram("✅ Bot処理完了しました（main.py 終了）")
 
