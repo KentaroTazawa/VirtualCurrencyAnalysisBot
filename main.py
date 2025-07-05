@@ -122,7 +122,11 @@ def fetch_ohlcv(symbol):
 
 def main():
     now = get_jst_now()
-    if not (20 <= now.hour < 23 or (now.hour == 23 and now.minute <= 30)):
+    if not (
+        (now.hour == 20 and now.minute >= 30) or
+        (21 <= now.hour <= 23) or
+        (now.hour == 0 and now.minute <= 30)
+    ):
         print(f"[INFO] 実行時間外のためスキップ（現在: {now.strftime('%H:%M')} JST）")
         return
 
