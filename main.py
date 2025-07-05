@@ -3,12 +3,12 @@ import os
 import openai
 import time
 
-# === 環境変数読み込み ===
+# === 環境変数 ===
 openai.api_key = os.getenv("OPENAI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === 急変動上位通貨取得（'change24h'を手計算）===
+# === 急変動上位30通貨を取得（change24hを手計算） ===
 def get_top_movers_okx(limit=30):
     url = "https://www.okx.com/api/v5/market/tickers"
     params = {"instType": "SWAP"}  # 無期限先物を対象
@@ -16,29 +16,27 @@ def get_top_movers_okx(limit=30):
 
     if res.status_code != 200:
         raise ValueError(f"OKX ticker取得失敗: {res.status_code} / {res.text}")
-    
+
     data = res.json().get("data", [])
     tickers_with_change = []
 
     for t in data:
         try:
             if not t["instId"].endswith("-USDT"):
-                continue  # USDT建てだけ対象
+                continue  # USDT建て以外は除外
             last = float(t["last"])
             open_ = float(t["open24h"])
             if open_ == 0:
-                continue  # 0除算回避
+                continue  # ゼロ割回避
             change_pct = (last - open_) / open_ * 100
             tickers_with_change.append((t["instId"], abs(change_pct)))
         except Exception:
             continue
 
-    # 変動率の絶対値で降順ソート
     sorted_tickers = sorted(tickers_with_change, key=lambda x: x[1], reverse=True)
-    top_symbols = [t[0] for t in sorted_tickers[:limit]]
-    return top_symbols
+    return [t[0] for t in sorted_tickers[:limit]]
 
-# === ローソク足取得（15分足） ===
+# === ローソク足データ取得（15分足） ===
 def fetch_okx_closes(symbol="BTC-USDT", interval="15m", limit=50):
     url = "https://www.okx.com/api/v5/market/candles"
     params = {"instId": symbol, "bar": interval, "limit": limit}
@@ -46,10 +44,10 @@ def fetch_okx_closes(symbol="BTC-USDT", interval="15m", limit=50):
 
     if res.status_code != 200:
         raise ValueError(f"OKXローソク足取得失敗: {res.status_code} / {res.text}")
-    
+
     candles = res.json().get("data", [])
     closes = [float(c[4]) for c in candles]
-    closes.reverse()  # 最新が最後なので逆順にする
+    closes.reverse()  # 最新を最後にする（GPTにわかりやすく）
     return closes
 
 # === GPTに分析を依頼 ===
@@ -81,7 +79,7 @@ def send_to_gpt(closes, symbol="BTC-USDT"):
     except Exception as e:
         return f"⚠️ GPTエラー: {e}"
 
-# === Telegramへ送信 ===
+# === Telegram通知 ===
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
@@ -89,13 +87,13 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram送信エラー: {e}")
 
-# === メイン実行 ===
+# === メイン関数 ===
 def main():
     try:
         top_symbols = get_top_movers_okx(limit=30)
         for symbol in top_symbols:
             try:
-                time.sleep(0.4)  # レート制限対策
+                time.sleep(0.4)  # レート制限回避（OKXは1秒あたり2〜5回程度まで）
                 closes = fetch_okx_closes(symbol=symbol, interval="15m", limit=50)
                 result = send_to_gpt(closes, symbol=symbol)
                 send_telegram(f"📉 {symbol} ショート分析結果（OKX 15分足）\n\n{result}")
