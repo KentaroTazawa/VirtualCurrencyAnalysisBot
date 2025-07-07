@@ -1,7 +1,7 @@
 import os
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from io import BytesIO
 import matplotlib.pyplot as plt
@@ -10,15 +10,17 @@ import pandas as pd
 
 load_dotenv()
 
+# --- 環境変数 ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 NOTIFIED_FILE = "notified_pairs.json"
 
+# --- ログ関数 ---
 def log(msg):
     print(msg, flush=True)
 
+# --- テクニカル指標 ---
 def calculate_rsi(prices, period=14):
     deltas = np.diff(prices)
     seed = deltas[:period]
@@ -45,11 +47,11 @@ def is_volume_spike(volumes):
     avg = np.mean(volumes[:-5])
     return volumes[-1] > avg * 1.5
 
+# --- データ取得 ---
 def fetch_ohlcv(symbol):
     url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     res = requests.get(url).json()
     if res.get("code") != "0":
-        log(f"[WARN] OHLCV取得失敗: {symbol} - {res.get('msg')}")
         return [], []
     closes = [float(c[4]) for c in reversed(res["data"])]
     volumes = [float(c[5]) for c in reversed(res["data"])]
@@ -59,12 +61,10 @@ def fetch_symbols():
     url = "https://www.okx.com/api/v5/market/tickers?instType=SWAP"
     res = requests.get(url).json()
     if res.get("code") != "0":
-        log(f"[WARN] 銘柄リスト取得失敗 - {res.get('msg')}")
         return []
-    symbols = [item["instId"] for item in res["data"] if item["instId"].endswith("-USDT-SWAP")]
-    log(f"[INFO] 取得銘柄数: {len(symbols)}")
-    return symbols
+    return [item["instId"] for item in res["data"] if item["instId"].endswith("-USDT-SWAP")]
 
+# --- 可視化チャート ---
 def generate_chart(prices, symbol):
     plt.figure(figsize=(6, 3))
     plt.plot(prices, color='red')
@@ -73,19 +73,16 @@ def generate_chart(prices, symbol):
     buf = BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
-    plt.close()
     return buf
 
+# --- Telegram通知 ---
 def send_telegram(photo, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     files = {"photo": ("chart.png", photo)}
     data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption}
-    res = requests.post(url, files=files, data=data)
-    if res.status_code != 200:
-        log(f"[WARN] Telegram通知失敗: {res.text}")
-    else:
-        log("[INFO] Telegram通知成功")
+    requests.post(url, files=files, data=data)
 
+# --- Groq呼び出し ---
 def analyze_with_groq(symbol, rsi, macd, gap, volume_spike):
     prompt = f"""
 あなたは熟練の仮想通貨トレーダーAIです。
@@ -104,28 +101,27 @@ def analyze_with_groq(symbol, rsi, macd, gap, volume_spike):
 ・損切ライン（SL）：
 ・利益の出る確率：
 """
-    # Groq APIのrequestsによる直接呼び出し例（ダミーURLとヘッダー例）
-    url = "https://api.groq.ai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": "llama3-70b-8192",
-        "messages": [{"role": "user", "content": prompt}],
-    }
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "llama3-70b-8192",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.7,
+            },
+        )
         result = response.json()
-        content = result["choices"][0]["message"]["content"].strip()
-        return content
+        return result["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        log(f"⚠️ Groqエラー: {e}")
-        return None
+        return f"⚠️ Groqエラー: {e}"
 
+# --- 通知履歴管理 ---
 def load_notified():
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE) as f:
             data = json.load(f)
@@ -133,7 +129,7 @@ def load_notified():
     return set()
 
 def save_notified(pairs):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE) as f:
             data = json.load(f)
@@ -141,10 +137,11 @@ def save_notified(pairs):
         data = {}
     data[today] = list(pairs)
     with open(NOTIFIED_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f)
 
+# --- メイン処理 ---
 def main():
-    now = datetime.utcnow() + timedelta(hours=9)
+    now = datetime.now(timezone.utc) + timedelta(hours=9)  # JST
     if not (now.hour >= 20 or (now.hour == 0 and now.minute <= 30)):
         log("[INFO] 実行時間外のためスキップ")
         return
@@ -156,11 +153,9 @@ def main():
 
     for symbol in symbols:
         if symbol in notified:
-            log(f"[DEBUG] {symbol} は既に通知済みのためスキップ")
             continue
         prices, volumes = fetch_ohlcv(symbol)
         if len(prices) < 30:
-            log(f"[DEBUG] {symbol} の価格データが不足({len(prices)})のためスキップ")
             continue
         rsi = calculate_rsi(prices)
         macd = calculate_macd(prices)
@@ -169,48 +164,27 @@ def main():
 
         log(f"[DEBUG] {symbol} RSI={rsi} MACD={macd} MA乖離率={gap}% 出来高急増={'あり' if volume_spike else 'なし'}")
 
-        # 判定条件
-        if rsi < 70:
-            log(f"[DEBUG] {symbol} はRSI < 70のためスキップ")
-            continue
-        if macd != "dead":
-            log(f"[DEBUG] {symbol} はデッドクロスなしのためスキップ")
-            continue
-        if gap < 5:
-            log(f"[DEBUG] {symbol} はMA乖離率 < 5%のためスキップ")
-            continue
-        if not volume_spike:
-            log(f"[DEBUG] {symbol} は出来高急増なしのためスキップ")
+        if rsi < 70 or macd != "dead" or gap < 5 or not volume_spike:
+            log(f"[DEBUG] {symbol} は条件不一致でスキップ")
             continue
 
-        log(f"[INFO] Groq分析中: {symbol} (RSI={rsi})")
+        log(f"[INFO] Groq分析中: {symbol}")
         result = analyze_with_groq(symbol, rsi, macd, gap, volume_spike)
-        if result is None:
-            log(f"[WARN] {symbol} のGroq分析に失敗")
-            continue
         log(f"[Groq分析結果] {symbol}\n{result}")
 
-        # 利益の出る確率を抽出
-        prob = 0
         if "利益の出る確率：" in result:
             try:
-                prob_str = result.split("利益の出る確率：")[-1].split("\n")[0].replace("%", "").strip()
-                prob = int(prob_str)
-            except Exception as e:
-                log(f"[WARN] {symbol} 利益確率解析失敗: {e}")
+                prob = int(result.split("利益の出る確率：")[-1].replace("%", "").strip())
+                if prob >= 80:
+                    chart = generate_chart(prices, symbol)
+                    send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
+                    new_notify.add(symbol)
+            except:
                 continue
 
-        if prob >= 80:
-            chart = generate_chart(prices, symbol)
-            send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
-            new_notify.add(symbol)
-        else:
-            log(f"[DEBUG] {symbol} 利益確率 {prob}% は80%未満のため通知しない")
-
     save_notified(notified | new_notify)
-
     if new_notify:
-        log(f"[INFO] 通知済み件数: {len(new_notify)}")
+        log(f"[INFO] 通知済み: {len(new_notify)}件")
     else:
         log("[INFO] 通知対象がなかったためTelegram通知なし")
 
