@@ -1,7 +1,6 @@
-flask
 requests
-openai>=1.0.0
-matplotlib
-Pillow
 python-dotenv
+groq
+matplotlib
 numpy
+pandas
