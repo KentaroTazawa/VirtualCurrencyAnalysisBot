@@ -1,7 +1,7 @@
 import os
 import json
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from io import BytesIO
 import matplotlib.pyplot as plt
@@ -16,11 +16,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 NOTIFIED_FILE = "notified_pairs.json"
 
-# --- ログ関数 ---
-def log(msg):
-    print(msg, flush=True)
-
-# --- テクニカル指標 ---
+# --- テクニカル計算 ---
 def calculate_rsi(prices, period=14):
     deltas = np.diff(prices)
     seed = deltas[:period]
@@ -47,7 +43,10 @@ def is_volume_spike(volumes):
     avg = np.mean(volumes[:-5])
     return volumes[-1] > avg * 1.5
 
-# --- データ取得 ---
+# --- ユーティリティ ---
+def log(msg):
+    print(msg, flush=True)
+
 def fetch_ohlcv(symbol):
     url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     res = requests.get(url).json()
@@ -64,7 +63,6 @@ def fetch_symbols():
         return []
     return [item["instId"] for item in res["data"] if item["instId"].endswith("-USDT-SWAP")]
 
-# --- 可視化チャート ---
 def generate_chart(prices, symbol):
     plt.figure(figsize=(6, 3))
     plt.plot(prices, color='red')
@@ -75,14 +73,12 @@ def generate_chart(prices, symbol):
     buf.seek(0)
     return buf
 
-# --- Telegram通知 ---
 def send_telegram(photo, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     files = {"photo": ("chart.png", photo)}
     data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption}
     requests.post(url, files=files, data=data)
 
-# --- Groq呼び出し ---
 def analyze_with_groq(symbol, rsi, macd, gap, volume_spike):
     prompt = f"""
 あなたは熟練の仮想通貨トレーダーAIです。
@@ -101,27 +97,25 @@ def analyze_with_groq(symbol, rsi, macd, gap, volume_spike):
 ・損切ライン（SL）：
 ・利益の出る確率：
 """
+
     try:
         response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json",
+                "Content-Type": "application/json"
             },
             json={
                 "model": "llama3-70b-8192",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7,
-            },
+                "messages": [{"role": "user", "content": prompt}]
+            }
         )
-        result = response.json()
-        return result["choices"][0]["message"]["content"].strip()
+        return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
         return f"⚠️ Groqエラー: {e}"
 
-# --- 通知履歴管理 ---
 def load_notified():
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE) as f:
             data = json.load(f)
@@ -129,7 +123,7 @@ def load_notified():
     return set()
 
 def save_notified(pairs):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE) as f:
             data = json.load(f)
@@ -141,7 +135,7 @@ def save_notified(pairs):
 
 # --- メイン処理 ---
 def main():
-    now = datetime.now(timezone.utc) + timedelta(hours=9)  # JST
+    now = datetime.utcnow() + timedelta(hours=9)  # JST
     if not (now.hour >= 20 or (now.hour == 0 and now.minute <= 30)):
         log("[INFO] 実行時間外のためスキップ")
         return
@@ -157,34 +151,27 @@ def main():
         prices, volumes = fetch_ohlcv(symbol)
         if len(prices) < 30:
             continue
+
         rsi = calculate_rsi(prices)
         macd = calculate_macd(prices)
         gap = calculate_ma_gap(prices)
         volume_spike = is_volume_spike(volumes)
 
-        log(f"[DEBUG] {symbol} RSI={rsi} MACD={macd} MA乖離率={gap}% 出来高急増={'あり' if volume_spike else 'なし'}")
-
         if rsi < 70 or macd != "dead" or gap < 5 or not volume_spike:
-            log(f"[DEBUG] {symbol} は条件不一致でスキップ")
             continue
 
-        log(f"[INFO] Groq分析中: {symbol}")
+        log(f"[分析] {symbol} をGroqで評価中…")
         result = analyze_with_groq(symbol, rsi, macd, gap, volume_spike)
-        log(f"[Groq分析結果] {symbol}\n{result}")
+        log(f"[結果] {symbol}\n{result}")
 
-        if "利益の出る確率：" in result:
-            try:
-                prob = int(result.split("利益の出る確率：")[-1].replace("%", "").strip())
-                if prob >= 80:
-                    chart = generate_chart(prices, symbol)
-                    send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
-                    new_notify.add(symbol)
-            except:
-                continue
+        if "ショートすべきか" in result:
+            chart = generate_chart(prices, symbol)
+            send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
+            new_notify.add(symbol)
 
     save_notified(notified | new_notify)
     if new_notify:
-        log(f"[INFO] 通知済み: {len(new_notify)}件")
+        log(f"[INFO] 通知完了: {len(new_notify)}件")
     else:
         log("[INFO] 通知対象がなかったためTelegram通知なし")
 
