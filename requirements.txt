@@ -1,6 +1,6 @@
 requests
 python-dotenv
-groq
+groq-sdk
 matplotlib
 numpy
 pandas
