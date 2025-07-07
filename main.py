@@ -1,7 +1,8 @@
+
 import os
 import json
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from io import BytesIO
 import matplotlib.pyplot as plt
@@ -11,6 +12,7 @@ import pandas as pd
 load_dotenv()
 
 # --- 環境変数読み込み ---
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -78,8 +80,6 @@ def send_telegram(photo, caption):
     requests.post(url, files=files, data=data)
 
 def analyze_with_groq(symbol, rsi, macd, gap, volume_spike):
-    # ここはお好みでGroq APIをrequestsで叩く形に書き換えてください
-    # 例として、エラーが出ないダミー応答を返す形にしています
     prompt = f"""
 あなたは熟練の仮想通貨トレーダーAIです。
 以下のテクニカル情報を元に、この銘柄をショートすべきか判断してください。
@@ -97,12 +97,26 @@ def analyze_with_groq(symbol, rsi, macd, gap, volume_spike):
 ・損切ライン（SL）：
 ・利益の出る確率：
 """
-    # ここにrequestsでGroq API呼び出しを実装するか、APIキーなど準備して置き換えてください
-    # 今は簡単にダミー応答
-    return "はい\n理由: RSIが高くデッドクロスが発生しているため\n利確ライン（TP）: -5%\n損切ライン（SL）: +2%\n利益の出る確率：85%"
+    try:
+        res = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama3-70b-8192",
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=30
+        )
+        res.raise_for_status()
+        return res.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"⚠️ Groqエラー: {e}"
 
 def load_notified():
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).date().isoformat()
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE) as f:
             data = json.load(f)
@@ -110,7 +124,7 @@ def load_notified():
     return set()
 
 def save_notified(pairs):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).date().isoformat()
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE) as f:
             data = json.load(f)
@@ -128,34 +142,30 @@ def main():
 
     for symbol in symbols:
         if symbol in notified:
-            log(f"[DEBUG] {symbol} は既に通知済みのためスキップ")
             continue
         prices, volumes = fetch_ohlcv(symbol)
         if len(prices) < 30:
-            log(f"[DEBUG] {symbol} は価格データ不足でスキップ")
             continue
         rsi = calculate_rsi(prices)
         macd = calculate_macd(prices)
         gap = calculate_ma_gap(prices)
         volume_spike = is_volume_spike(volumes)
 
-        log(f"[DEBUG] {symbol} RSI={rsi} MACD={macd} MA乖離率={gap}% 出来高急増={'あり' if volume_spike else 'なし'}")
-
         if rsi < 70 or macd != "dead" or gap < 5 or not volume_spike:
-            log(f"[DEBUG] {symbol} は条件未達のためスキップ")
+            # log(f"[DEBUG] {symbol} は条件未達のためスキップ")
+            # log(f"[DEBUG] {symbol} RSI={rsi} MACD={macd} MA乖離率={gap}% 出来高急増={'あり' if volume_spike else 'なし'}")
             continue
 
         log(f"[INFO] Groq分析中: {symbol} (RSI={rsi})")
         result = analyze_with_groq(symbol, rsi, macd, gap, volume_spike)
         log(f"[Groq分析結果] {symbol}\n{result}")
 
-        # 条件を外したため、利益確率チェックはしない
-        chart = generate_chart(prices, symbol)
-        send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
-        new_notify.add(symbol)
+        if "ショートすべきか" in result:
+            chart = generate_chart(prices, symbol)
+            send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
+            new_notify.add(symbol)
 
     save_notified(notified | new_notify)
-
     if new_notify:
         log(f"[INFO] 通知済み: {len(new_notify)}件")
     else:
