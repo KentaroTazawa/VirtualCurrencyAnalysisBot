@@ -127,6 +127,7 @@ def save_notified(pairs):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
+# Cloud Functionsのエントリポイント
 def main(request=None):
     log("[INFO] 処理開始")
     notified = load_notified()
@@ -148,10 +149,9 @@ def main(request=None):
             continue
 
         result = analyze_with_groq(symbol, rsi, macd, gap, volume_spike)
-        if "利益の出る確率：" in result:
-            chart = generate_chart(prices, symbol)
-            send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
-            new_notify.add(symbol)
+        chart = generate_chart(prices, symbol)
+        send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
+        new_notify.add(symbol)
 
     save_notified(notified | new_notify)
     if new_notify:
