@@ -4,6 +4,8 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from io import BytesIO
+import matplotlib
+matplotlib.use("Agg")  # GUI不要のバックエンド
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -11,17 +13,12 @@ from flask import Flask, request
 
 load_dotenv()
 
+app = Flask(__name__)
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NOTIFIED_FILE = "notified_pairs.json"
-
-app = Flask(__name__)  # Flaskアプリ初期化
-
-@app.route("/", methods=["GET"])
-def index():
-    run_bot()
-    return "OK", 200
 
 def calculate_rsi(prices, period=14):
     deltas = np.diff(prices)
@@ -135,7 +132,8 @@ def save_notified(pairs):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
-def run_bot():
+@app.route("/", methods=["POST"])
+def handler():
     log("[INFO] 処理開始")
     notified = load_notified()
     symbols = fetch_symbols()
@@ -166,3 +164,9 @@ def run_bot():
         log(f"[INFO] 通知済み: {len(new_notify)}件")
     else:
         log("[INFO] 通知対象がなかったためTelegram通知なし")
+
+    return "OK", 200
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
