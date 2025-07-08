@@ -7,6 +7,7 @@ from io import BytesIO
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from flask import Flask, request
 
 load_dotenv()
 
@@ -14,6 +15,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NOTIFIED_FILE = "notified_pairs.json"
+
+app = Flask(__name__)  # Flaskアプリ初期化
+
+@app.route("/", methods=["GET"])
+def index():
+    run_bot()
+    return "OK", 200
 
 def calculate_rsi(prices, period=14):
     deltas = np.diff(prices)
@@ -127,7 +135,7 @@ def save_notified(pairs):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
-def main(request=None):
+def run_bot():
     log("[INFO] 処理開始")
     notified = load_notified()
     symbols = fetch_symbols()
