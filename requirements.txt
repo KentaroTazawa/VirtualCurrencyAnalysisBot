@@ -1,7 +1,6 @@
-Flask
-gunicorn
+flask
+requests
 python-dotenv
+pandas
 matplotlib
 numpy
-pandas
-requests
