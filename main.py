@@ -4,8 +4,6 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from io import BytesIO
-import matplotlib
-matplotlib.use("Agg")  # GUI不要のバックエンド
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -132,8 +130,8 @@ def save_notified(pairs):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
-@app.route("/", methods=["POST"])
-def handler():
+@app.route("/", methods=["POST", "GET"])
+def run_analysis():
     log("[INFO] 処理開始")
     notified = load_notified()
     symbols = fetch_symbols()
@@ -164,9 +162,4 @@ def handler():
         log(f"[INFO] 通知済み: {len(new_notify)}件")
     else:
         log("[INFO] 通知対象がなかったためTelegram通知なし")
-
     return "OK", 200
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
