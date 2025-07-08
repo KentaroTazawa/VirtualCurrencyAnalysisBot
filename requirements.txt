@@ -3,4 +3,3 @@ python-dotenv
 matplotlib
 numpy
 pandas
-flask

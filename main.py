@@ -7,15 +7,12 @@ from io import BytesIO
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from flask import Flask
-import threading
 
 load_dotenv()
 
-# --- 環境変数読み込み ---
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NOTIFIED_FILE = "notified_pairs.json"
 
 def calculate_rsi(prices, period=14):
@@ -101,20 +98,18 @@ def analyze_with_groq(symbol, rsi, macd, gap, volume_spike):
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    body = {
+    payload = {
         "model": "llama3-70b-8192",
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
-        res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body)
-        res.raise_for_status()
-        content = res.json()["choices"][0]["message"]["content"]
-        return content.strip()
+        res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+        return res.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
         return f"⚠️ Groqエラー: {e}"
 
 def load_notified():
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE) as f:
             data = json.load(f)
@@ -122,7 +117,7 @@ def load_notified():
     return set()
 
 def save_notified(pairs):
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE) as f:
             data = json.load(f)
@@ -132,7 +127,7 @@ def save_notified(pairs):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
-def main():
+def main(request=None):
     log("[INFO] 処理開始")
     notified = load_notified()
     symbols = fetch_symbols()
@@ -152,30 +147,14 @@ def main():
         if rsi < 70 or macd != "dead" or gap < 5 or not volume_spike:
             continue
 
-        log(f"[INFO] Groq分析中: {symbol} (RSI={rsi})")
         result = analyze_with_groq(symbol, rsi, macd, gap, volume_spike)
-        log(f"[Groq分析結果] {symbol}\n{result}")
-
-        chart = generate_chart(prices, symbol)
-        send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
-        new_notify.add(symbol)
+        if "利益の出る確率：" in result:
+            chart = generate_chart(prices, symbol)
+            send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
+            new_notify.add(symbol)
 
     save_notified(notified | new_notify)
     if new_notify:
         log(f"[INFO] 通知済み: {len(new_notify)}件")
     else:
         log("[INFO] 通知対象がなかったためTelegram通知なし")
-
-# --- ダミーFlaskサーバー起動 ---
-app = Flask(__name__)
-
-@app.route("/")
-def index():
-    return "Bot is running."
-
-def run_flask():
-    app.run(host="0.0.0.0", port=10000)
-
-if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
-    main()
