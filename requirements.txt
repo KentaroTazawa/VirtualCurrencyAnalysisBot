@@ -1,6 +1,2 @@
 flask
-requests
-python-dotenv
-pandas
-matplotlib
-numpy
+gunicorn
