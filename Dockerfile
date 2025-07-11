@@ -15,5 +15,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
+# Set environment variable for Flask to run on the correct interface/port
+ENV PORT 8080
+
+# Optional (but good practice)
+EXPOSE 8080
+
 # Set the startup command
 CMD ["python", "main.py"]
