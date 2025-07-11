@@ -1,11 +1,11 @@
-from flask import Flask
 import os
+from flask import Flask
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot is alive!"
+    return "Hello, Crypto Bot is running!", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
