@@ -1,94 +1,103 @@
 import os
 import json
+import time
 import requests
 import pandas as pd
 import matplotlib.pyplot as plt
-import io
+from flask import Flask, jsonify
 from datetime import datetime
-from flask import Flask
-from dotenv import load_dotenv
+from io import BytesIO
+from pytz import timezone
 
-load_dotenv()
-app = Flask(__name__)
-
+# 環境変数の読み込み
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-NOTIFIED_FILE = "notified_pairs.json"
 
-def fetch_okx_symbols():
-    url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
+app = Flask(__name__)
+
+OKX_BASE_URL = "https://www.okx.com"
+JST = timezone("Asia/Tokyo")
+
+# ----------------------------------------
+# 各種ユーティリティ関数
+# ----------------------------------------
+
+def fetch_symbols():
+    url = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
     res = requests.get(url).json()
-    return [i["instId"] for i in res["data"] if i["instId"].endswith("USDT-SWAP")]
+    symbols = [
+        x["instId"]
+        for x in res["data"]
+        if x["instId"].endswith("USDT-SWAP")
+    ]
+    return symbols
 
 def fetch_ohlcv(symbol):
-    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=30"
+    url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     res = requests.get(url).json()
-    if res["code"] != '0':
-        return None
-    df = pd.DataFrame(res["data"], columns=[
-        "timestamp", "open", "high", "low", "close", "volume", *_])
-    df = df.iloc[::-1]
-    df["close"] = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+    df = pd.DataFrame(
+        res["data"],
+        columns=["timestamp", "open", "high", "low", "close", "volume"]
+    )
+    df = df.iloc[::-1].copy()
+    df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
+    return df
+
+def calculate_indicators(df):
+    df["rsi"] = compute_rsi(df["close"])
+    df["macd"], df["signal"] = compute_macd(df["close"])
+    df["ma25"] = df["close"].rolling(window=25).mean()
+    df["disparity"] = (df["close"] - df["ma25"]) / df["ma25"] * 100
+    df["vol_ma"] = df["volume"].rolling(window=5).mean()
+    df["vol_spike"] = df["volume"] > df["vol_ma"] * 1.5
     return df
 
 def compute_rsi(series, period=14):
     delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
     return 100 - (100 / (1 + rs))
 
 def compute_macd(series):
-    exp1 = series.ewm(span=12).mean()
-    exp2 = series.ewm(span=26).mean()
-    macd = exp1 - exp2
-    signal = macd.ewm(span=9).mean()
+    ema12 = series.ewm(span=12, adjust=False).mean()
+    ema26 = series.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
     return macd, signal
 
-def calc_indicators(df):
-    df["ema25"] = df["close"].ewm(span=25).mean()
-    df["divergence"] = (df["close"] - df["ema25"]) / df["ema25"] * 100
-    df["rsi"] = compute_rsi(df["close"])
-    macd, signal = compute_macd(df["close"])
-    df["macd"], df["macd_signal"] = macd, signal
-    df["volume_avg"] = df["volume"].rolling(5).mean()
-    return df
+def is_dead_cross(macd, signal):
+    return macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]
 
 def filter_symbols(symbols):
-    result = []
+    filtered = []
     for sym in symbols:
-        df = fetch_ohlcv(sym)
-        if df is None or len(df) < 26:
-            continue
-        df = calc_indicators(df)
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
-        if (
-            latest["rsi"] >= 70 and
-            prev["macd"] > prev["macd_signal"] and latest["macd"] < latest["macd_signal"] and
-            latest["divergence"] > 5 and
-            latest["volume"] > latest["volume_avg"]
-        ):
-            result.append((sym, df))
-    return result
+        try:
+            df = fetch_ohlcv(sym)
+            df = calculate_indicators(df)
+            if (
+                df["rsi"].iloc[-1] >= 70 and
+                is_dead_cross(df["macd"], df["signal"]) and
+                df["disparity"].iloc[-1] > 5 and
+                df["vol_spike"].iloc[-1]
+            ):
+                filtered.append((sym, df))
+        except Exception as e:
+            print(f"[ERROR] {sym} → {e}")
+    return filtered
 
-def analyze_with_groq(symbol, df):
-    l = df.iloc[-1]
-    prompt = f"""以下は仮想通貨のテクニカルデータです。この銘柄をショートするべきか分析してください。
+def ask_groq(symbol, df):
+    prompt = f"""
+以下は{symbol}の15分足チャート分析結果です。
+- RSI: {df['rsi'].iloc[-1]:.2f}
+- MACD: {df['macd'].iloc[-1]:.5f}
+- シグナル: {df['signal'].iloc[-1]:.5f}
+- 乖離率: {df['disparity'].iloc[-1]:.2f}%
+- 出来高急増: {"あり" if df["vol_spike"].iloc[-1] else "なし"}
 
-銘柄: {symbol}
-RSI: {l["rsi"]:.2f}
-MACD: {l["macd"]:.6f}
-MACDシグナル: {l["macd_signal"]:.6f}
-移動平均乖離率: {l["divergence"]:.2f}%
-出来高: {l["volume"]:.2f}
-過去5本の平均出来高: {l["volume_avg"]:.2f}
+この情報を元に、次の形式でショートすべきか判断してください：
 
-以下の形式で出力してください：
 ・ショートすべきか（はい/いいえ）：
 ・理由：
 ・利確ライン（TP）：
@@ -99,93 +108,93 @@ MACDシグナル: {l["macd_signal"]:.6f}
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    data = {
+    payload = {
         "model": "llama3-70b-8192",
-        "messages": [{"role": "user", "content": prompt}]
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7
     }
-    try:
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data, timeout=30)
-        return r.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        print(f"[Groq ERROR] {e}")
-        return None
+    res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+    return res.json()["choices"][0]["message"]["content"]
 
-def plot_chart(df, symbol):
-    fig, ax = plt.subplots(figsize=(8, 4))
-    df["close"].plot(ax=ax, label="Close", color="black")
-    df["ema25"].plot(ax=ax, label="EMA25", linestyle="--", color="blue")
-    ax.set_title(f"{symbol} - 15min")
-    ax.legend()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png")
-    buf.seek(0)
-    plt.close(fig)
-    return buf
+def send_telegram(text, df=None, symbol=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    requests.post(url, json=payload)
 
-def send_telegram_message(text):
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                      data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
-    except Exception as e:
-        print(f"[Telegram ERROR] message: {e}")
+    if df is not None and symbol:
+        plt.figure(figsize=(10, 4))
+        plt.plot(df["close"], label="Close")
+        plt.plot(df["ma25"], label="MA25", linestyle="--")
+        plt.title(f"{symbol} - 15min")
+        plt.legend()
+        plt.grid()
+        buf = BytesIO()
+        plt.savefig(buf, format="png")
+        buf.seek(0)
 
-def send_telegram_image(image, caption):
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
-                      files={"photo": image},
-                      data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption}, timeout=10)
-    except Exception as e:
-        print(f"[Telegram ERROR] image: {e}")
+        photo_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+        files = {"photo": buf}
+        data = {"chat_id": TELEGRAM_CHAT_ID}
+        requests.post(photo_url, data=data, files=files)
 
 def load_notified():
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    if os.path.exists(NOTIFIED_FILE):
-        with open(NOTIFIED_FILE, "r") as f:
-            all_data = json.load(f)
+    today = datetime.now(JST).strftime("%Y-%m-%d")
+    if os.path.exists("notified_pairs.json"):
+        with open("notified_pairs.json", "r") as f:
+            data = json.load(f)
     else:
-        all_data = {}
-    return all_data.get(today, [])
+        data = {}
+    return data.get(today, [])
 
-def save_notified(notified_today):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    if os.path.exists(NOTIFIED_FILE):
-        with open(NOTIFIED_FILE, "r") as f:
-            all_data = json.load(f)
-    else:
-        all_data = {}
-    all_data[today] = notified_today
-    with open(NOTIFIED_FILE, "w") as f:
-        json.dump(all_data, f)
+def save_notified(pairs):
+    today = datetime.now(JST).strftime("%Y-%m-%d")
+    data = {}
+    if os.path.exists("notified_pairs.json"):
+        with open("notified_pairs.json", "r") as f:
+            data = json.load(f)
+    data[today] = pairs
+    with open("notified_pairs.json", "w") as f:
+        json.dump(data, f)
+
+# ----------------------------------------
+# Flaskエンドポイント
+# ----------------------------------------
 
 @app.route("/")
-def index():
+def health():
     return "OK", 200
 
 @app.route("/run_analysis")
 def run_analysis():
     print("[INFO] 処理開始")
-    symbols = fetch_okx_symbols()
+    symbols = fetch_symbols()
     filtered = filter_symbols(symbols)
+    print(f"[INFO] 通知対象: {[sym for sym, _ in filtered]}")
     notified = load_notified()
 
     for sym, df in filtered:
         if sym in notified:
             continue
-        result = analyze_with_groq(sym, df)
-        if not result or "利益の出る確率" not in result:
-            continue
-        try:
-            prob = int(result.split("利益の出る確率")[1].split("%")[0].strip("：: ").strip())
-        except:
-            prob = 0
-        if prob >= 80:
-            buf = plot_chart(df, sym)
-            send_telegram_image(buf, f"{sym} 分析結果")
-            send_telegram_message(f"{sym}\n{result}")
-            notified.append(sym)
-            print(f"[INFO] 通知: {sym}")
+        result = ask_groq(sym, df)
+        if "はい" in result and "利益の出る確率" in result:
+            try:
+                prob = int(result.split("利益の出る確率")[1].split("%")[0].strip("：: "))
+                if prob >= 80:
+                    send_telegram(f"【{sym} 分析結果】\n{result}", df, sym)
+                    notified.append(sym)
+            except Exception as e:
+                print(f"[ERROR] 通知処理 → {e}")
+                continue
+
     save_notified(notified)
-    return "OK", 200
+    return jsonify({"status": "done"}), 200
+
+# ----------------------------------------
 
 if __name__ == "__main__":
-    app.run()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
