@@ -1,80 +1,94 @@
 import os
 import json
-import time
 import requests
-from datetime import datetime, timedelta
-from flask import Flask
-import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
-from io import BytesIO
+import matplotlib.pyplot as plt
+import io
+from datetime import datetime
+from flask import Flask
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# 環境変数
-OKX_BASE_URL = "https://www.okx.com"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 app = Flask(__name__)
 
-def get_symbols():
-    url = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
-    response = requests.get(url)
-    return [item["instId"] for item in response.json()["data"] if item["instId"].endswith("USDT-SWAP")]
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+NOTIFIED_FILE = "notified_pairs.json"
 
-def get_candlesticks(symbol):
-    url = f"{OKX_BASE_URL}/api/v5/market/candles"
-    params = {"instId": symbol, "bar": "15m", "limit": "30"}
-    response = requests.get(url, params=params)
-    df = pd.DataFrame(response.json()["data"], columns=[
-        "timestamp", "open", "high", "low", "close", "volume", "_", "_", "_", "_", "_"
-    ])
+def fetch_okx_symbols():
+    url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
+    res = requests.get(url).json()
+    return [i["instId"] for i in res["data"] if i["instId"].endswith("USDT-SWAP")]
+
+def fetch_ohlcv(symbol):
+    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=30"
+    res = requests.get(url).json()
+    if res["code"] != '0':
+        return None
+    df = pd.DataFrame(res["data"], columns=[
+        "timestamp", "open", "high", "low", "close", "volume", *_])
+    df = df.iloc[::-1]
     df["close"] = df["close"].astype(float)
-    df["open"] = df["open"].astype(float)
     df["volume"] = df["volume"].astype(float)
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    return df.sort_values("timestamp").reset_index(drop=True)
-
-def calculate_indicators(df):
-    df["rsi"] = compute_rsi(df["close"])
-    df["macd"], df["macd_signal"] = compute_macd(df["close"])
-    df["disparity"] = (df["close"] - df["close"].rolling(25).mean()) / df["close"].rolling(25).mean() * 100
-    df["vol_ma"] = df["volume"].rolling(5).mean()
-    df["volume_spike"] = df["volume"] > 1.5 * df["vol_ma"]
     return df
 
 def compute_rsi(series, period=14):
     delta = series.diff()
-    up = delta.clip(lower=0)
-    down = -delta.clip(upper=0)
-    ma_up = up.rolling(window=period).mean()
-    ma_down = down.rolling(window=period).mean()
-    rs = ma_up / ma_down
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def compute_macd(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd = ema_fast - ema_slow
-    signal_line = macd.ewm(span=signal, adjust=False).mean()
-    return macd, signal_line
+def compute_macd(series):
+    exp1 = series.ewm(span=12).mean()
+    exp2 = series.ewm(span=26).mean()
+    macd = exp1 - exp2
+    signal = macd.ewm(span=9).mean()
+    return macd, signal
 
-def is_macd_dead_cross(macd, signal):
-    return macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]
+def calc_indicators(df):
+    df["ema25"] = df["close"].ewm(span=25).mean()
+    df["divergence"] = (df["close"] - df["ema25"]) / df["ema25"] * 100
+    df["rsi"] = compute_rsi(df["close"])
+    macd, signal = compute_macd(df["close"])
+    df["macd"], df["macd_signal"] = macd, signal
+    df["volume_avg"] = df["volume"].rolling(5).mean()
+    return df
 
-def prompt_groq(symbol, df):
-    prompt = f"""銘柄: {symbol}
-現在のRSI: {df['rsi'].iloc[-1]:.1f}
-MACDがデッドクロスしているか: {"はい" if is_macd_dead_cross(df["macd"], df["macd_signal"]) else "いいえ"}
-移動平均乖離率: {df['disparity'].iloc[-1]:.2f}%
-出来高が急増しているか: {"はい" if df['volume_spike'].iloc[-1] else "いいえ"}
+def filter_symbols(symbols):
+    result = []
+    for sym in symbols:
+        df = fetch_ohlcv(sym)
+        if df is None or len(df) < 26:
+            continue
+        df = calc_indicators(df)
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+        if (
+            latest["rsi"] >= 70 and
+            prev["macd"] > prev["macd_signal"] and latest["macd"] < latest["macd_signal"] and
+            latest["divergence"] > 5 and
+            latest["volume"] > latest["volume_avg"]
+        ):
+            result.append((sym, df))
+    return result
 
-この情報をもとに、以下の形式で判断してください：
+def analyze_with_groq(symbol, df):
+    l = df.iloc[-1]
+    prompt = f"""以下は仮想通貨のテクニカルデータです。この銘柄をショートするべきか分析してください。
 
+銘柄: {symbol}
+RSI: {l["rsi"]:.2f}
+MACD: {l["macd"]:.6f}
+MACDシグナル: {l["macd_signal"]:.6f}
+移動平均乖離率: {l["divergence"]:.2f}%
+出来高: {l["volume"]:.2f}
+過去5本の平均出来高: {l["volume_avg"]:.2f}
+
+以下の形式で出力してください：
 ・ショートすべきか（はい/いいえ）：
 ・理由：
 ・利確ライン（TP）：
@@ -87,90 +101,91 @@ MACDがデッドクロスしているか: {"はい" if is_macd_dead_cross(df["ma
     }
     data = {
         "model": "llama3-70b-8192",
-        "messages": [
-            {"role": "system", "content": "あなたは熟練の仮想通貨トレーダーです。"},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.3
+        "messages": [{"role": "user", "content": prompt}]
     }
-    res = requests.post(GROQ_API_URL, headers=headers, json=data, timeout=60)
-    return res.json()["choices"][0]["message"]["content"]
+    try:
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data, timeout=30)
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"[Groq ERROR] {e}")
+        return None
 
-def generate_chart(df, symbol):
-    plt.figure(figsize=(8, 4))
-    plt.plot(df["timestamp"], df["close"], label="Close")
-    plt.title(symbol)
-    plt.xlabel("Time")
-    plt.ylabel("Price")
-    plt.grid()
-    plt.legend()
-    buf = BytesIO()
-    plt.savefig(buf, format="png")
+def plot_chart(df, symbol):
+    fig, ax = plt.subplots(figsize=(8, 4))
+    df["close"].plot(ax=ax, label="Close", color="black")
+    df["ema25"].plot(ax=ax, label="EMA25", linestyle="--", color="blue")
+    ax.set_title(f"{symbol} - 15min")
+    ax.legend()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
     buf.seek(0)
+    plt.close(fig)
     return buf
 
-def send_telegram_message(text, image_buf=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto" if image_buf else f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "caption": text} if image_buf else {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    files = {"photo": image_buf} if image_buf else None
-    requests.post(url, data=data, files=files)
+def send_telegram_message(text):
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                      data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
+    except Exception as e:
+        print(f"[Telegram ERROR] message: {e}")
 
-def load_notified_pairs():
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    if os.path.exists("notified_pairs.json"):
-        with open("notified_pairs.json", "r") as f:
-            data = json.load(f)
-        return data.get(today, [])
-    return []
+def send_telegram_image(image, caption):
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+                      files={"photo": image},
+                      data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption}, timeout=10)
+    except Exception as e:
+        print(f"[Telegram ERROR] image: {e}")
 
-def save_notified_pair(pair):
+def load_notified():
     today = datetime.utcnow().strftime("%Y-%m-%d")
-    data = {}
-    if os.path.exists("notified_pairs.json"):
-        with open("notified_pairs.json", "r") as f:
-            data = json.load(f)
-    if today not in data:
-        data[today] = []
-    if pair not in data[today]:
-        data[today].append(pair)
-    with open("notified_pairs.json", "w") as f:
-        json.dump(data, f)
+    if os.path.exists(NOTIFIED_FILE):
+        with open(NOTIFIED_FILE, "r") as f:
+            all_data = json.load(f)
+    else:
+        all_data = {}
+    return all_data.get(today, [])
+
+def save_notified(notified_today):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if os.path.exists(NOTIFIED_FILE):
+        with open(NOTIFIED_FILE, "r") as f:
+            all_data = json.load(f)
+    else:
+        all_data = {}
+    all_data[today] = notified_today
+    with open(NOTIFIED_FILE, "w") as f:
+        json.dump(all_data, f)
 
 @app.route("/")
 def index():
-    return "OK"
+    return "OK", 200
 
 @app.route("/run_analysis")
 def run_analysis():
     print("[INFO] 処理開始")
-    notified = load_notified_pairs()
-    symbols = get_symbols()
-    for symbol in symbols:
+    symbols = fetch_okx_symbols()
+    filtered = filter_symbols(symbols)
+    notified = load_notified()
+
+    for sym, df in filtered:
+        if sym in notified:
+            continue
+        result = analyze_with_groq(sym, df)
+        if not result or "利益の出る確率" not in result:
+            continue
         try:
-            df = get_candlesticks(symbol)
-            df = calculate_indicators(df)
-
-            rsi_ok = df["rsi"].iloc[-1] > 70
-            macd_cross = is_macd_dead_cross(df["macd"], df["macd_signal"])
-            disparity_ok = df["disparity"].iloc[-1] > 5
-            volume_ok = df["volume_spike"].iloc[-1]
-
-            if all([rsi_ok, macd_cross, disparity_ok, volume_ok]):
-                ai_result = prompt_groq(symbol, df)
-                print(f"[INFO] AI解析結果: {ai_result}")
-
-                if "はい" in ai_result and "利益の出る確率" in ai_result:
-                    try:
-                        probability = int("".join(filter(str.isdigit, ai_result.split("利益の出る確率")[1][:3])))
-                        if probability >= 80 and symbol not in notified:
-                            chart = generate_chart(df, symbol)
-                            send_telegram_message(f"{symbol}\n{ai_result}", chart)
-                            save_notified_pair(symbol)
-                    except:
-                        print("[WARN] 確率の抽出に失敗")
-        except Exception as e:
-            print(f"[ERROR] {symbol}: {e}")
-    return "Done"
+            prob = int(result.split("利益の出る確率")[1].split("%")[0].strip("：: ").strip())
+        except:
+            prob = 0
+        if prob >= 80:
+            buf = plot_chart(df, sym)
+            send_telegram_image(buf, f"{sym} 分析結果")
+            send_telegram_message(f"{sym}\n{result}")
+            notified.append(sym)
+            print(f"[INFO] 通知: {sym}")
+    save_notified(notified)
+    return "OK", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run()
