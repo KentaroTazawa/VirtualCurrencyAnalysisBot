@@ -1,169 +1,111 @@
 import os
 import json
 import requests
-from datetime import datetime
-from dotenv import load_dotenv
-from io import BytesIO
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
-from flask import Flask
-
-load_dotenv()
+from io import BytesIO
+from flask import Flask, send_file
+from datetime import datetime
+from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-NOTIFIED_FILE = "notified_pairs.json"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-def calculate_rsi(prices, period=14):
-    deltas = np.diff(prices)
-    seed = deltas[:period]
-    up = seed[seed >= 0].sum() / period
-    down = -seed[seed < 0].sum() / period
-    rs = up / down if down != 0 else 0
-    rsi = 100 - 100 / (1 + rs)
-    return round(rsi, 2)
-
-def calculate_macd(prices):
-    ema12 = pd.Series(prices).ewm(span=12).mean()
-    ema26 = pd.Series(prices).ewm(span=26).mean()
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9).mean()
-    recent_cross = macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]
-    return "dead" if recent_cross else "none"
-
-def calculate_ma_gap(prices):
-    ma = np.mean(prices[-25:])
-    current = prices[-1]
-    return round(((current - ma) / ma) * 100, 2)
-
-def is_volume_spike(volumes):
-    avg = np.mean(volumes[:-5])
-    return volumes[-1] > avg * 1.5
-
-def log(msg):
-    print(msg, flush=True)
-
-def fetch_ohlcv(symbol):
-    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
+def fetch_ohlcv(symbol: str):
+    url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
     res = requests.get(url).json()
-    if res.get("code") != "0":
-        return [], []
-    closes = [float(c[4]) for c in reversed(res["data"])]
-    volumes = [float(c[5]) for c in reversed(res["data"])]
-    return closes, volumes
+    prices = [float(candle[4]) for candle in res]  # Close price
+    volumes = [float(candle[5]) for candle in res]  # Volume
+    return prices, volumes
 
-def fetch_symbols():
-    url = "https://www.okx.com/api/v5/market/tickers?instType=SWAP"
-    res = requests.get(url).json()
-    if res.get("code") != "0":
-        return []
-    return [item["instId"] for item in res["data"] if item["instId"].endswith("-USDT-SWAP")]
+def calculate_indicators(prices, volumes):
+    df = pd.DataFrame({"close": prices, "volume": volumes})
+    df["rsi"] = df["close"].pct_change().apply(lambda x: max(x, 0)).rolling(window=14).mean() / \
+                df["close"].pct_change().abs().rolling(window=14).mean() * 100
+    df["ma"] = df["close"].rolling(window=20).mean()
+    df["macd"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
+    df["disparity"] = (df["close"] - df["ma"]) / df["ma"] * 100
+    df["volume_change"] = df["volume"].pct_change()
+    return df
 
-def generate_chart(prices, symbol):
-    plt.figure(figsize=(6, 3))
-    plt.plot(prices, color='red')
-    plt.title(f"{symbol} 15m Chart")
-    plt.tight_layout()
-    buf = BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    return buf
+def generate_plot_image(prices, symbol):
+    plt.figure(figsize=(10, 4))
+    plt.plot(prices, label=symbol)
+    plt.title(symbol)
+    plt.legend()
+    plt.grid(True)
+    buffer = BytesIO()
+    plt.savefig(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
 
-def send_telegram(photo, caption):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    files = {"photo": ("chart.png", photo)}
-    data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption}
-    requests.post(url, files=files, data=data)
+def analyze_with_groq(df, symbol):
+    from groq import Groq
+    client = Groq(api_key=GROQ_API_KEY)
 
-def analyze_with_groq(symbol, rsi, macd, gap, volume_spike):
+    latest = df.iloc[-1]
     prompt = f"""
-あなたは熟練の仮想通貨トレーダーAIです。
-以下のテクニカル情報を元に、この銘柄をショートすべきか判断してください。
+以下は仮想通貨の1分足データから計算したテクニカル指標の最新値です。
+- 銘柄: {symbol}
+- RSI: {latest['rsi']:.2f}
+- MACD: {latest['macd']:.6f}
+- 20MAとの乖離率: {latest['disparity']:.2f}%
+- 出来高変化率: {latest['volume_change']:.2f}
 
-銘柄: {symbol}
-・RSI: {rsi}
-・MACDクロス: {"デッドクロス" if macd == "dead" else "なし"}
-・移動平均乖離率: {gap}%
-・出来高急増: {"あり" if volume_spike else "なし"}
-
-フォーマット：
-・ショートすべきか（はい/いいえ）：
-・理由：
-・利確ライン（TP）：
-・損切ライン（SL）：
-・利益の出る確率：
+このデータに基づいて、今この銘柄をショートすべきかどうかを「はい」か「いいえ」で答えてください。その理由も簡潔に説明してください。
 """
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "llama3-70b-8192",
-        "messages": [{"role": "user", "content": prompt}]
-    }
-    try:
-        res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-        return res.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        return f"⚠️ Groqエラー: {e}"
 
-def load_notified():
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    if os.path.exists(NOTIFIED_FILE):
-        with open(NOTIFIED_FILE) as f:
-            data = json.load(f)
-        return set(data.get(today, []))
-    return set()
+    chat_completion = client.chat.completions.create(
+        messages=[{"role": "user", "content": prompt}],
+        model="llama3-8b-8192"
+    )
+    return chat_completion.choices[0].message.content.strip()
 
-def save_notified(pairs):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    if os.path.exists(NOTIFIED_FILE):
-        with open(NOTIFIED_FILE) as f:
-            data = json.load(f)
-    else:
-        data = {}
-    data[today] = list(pairs)
-    with open(NOTIFIED_FILE, "w") as f:
-        json.dump(data, f)
+def send_telegram_message(message, image_buffer=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    requests.post(url, data=data)
 
-@app.route("/", methods=["GET"])
+    if image_buffer:
+        files = {"photo": image_buffer}
+        data = {"chat_id": TELEGRAM_CHAT_ID}
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+        requests.post(url, data=data, files=files)
+
+@app.route("/")
+def health_check():
+    return "OK"
+
+@app.route("/run_analysis")
 def run_analysis():
-    log("[INFO] 処理開始")
-    notified = load_notified()
-    symbols = fetch_symbols()
-    new_notify = set()
+    print("[INFO] 処理開始")
+    try:
+        symbols = requests.get("https://api.mexc.com/api/v3/ticker/price").json()
+        top_symbols = [s["symbol"] for s in symbols if s["symbol"].endswith("USDT") and not s["symbol"].endswith("3SUSDT")][:10]
 
-    for symbol in symbols:
-        if symbol in notified:
-            continue
-        prices, volumes = fetch_ohlcv(symbol)
-        if len(prices) < 30:
-            continue
-        rsi = calculate_rsi(prices)
-        macd = calculate_macd(prices)
-        gap = calculate_ma_gap(prices)
-        volume_spike = is_volume_spike(volumes)
+        notified = False
+        for symbol in top_symbols:
+            prices, volumes = fetch_ohlcv(symbol)
+            df = calculate_indicators(prices, volumes)
+            analysis = analyze_with_groq(df, symbol)
 
-        if rsi < 70 or macd != "dead" or gap < 5 or not volume_spike:
-            continue
+            if analysis.startswith("はい"):
+                print(f"[INFO] 通知対象: {symbol}")
+                image_buffer = generate_plot_image(prices, symbol)
+                send_telegram_message(f"{symbol} をショートすべき理由:\n{analysis}", image_buffer)
+                notified = True
 
-        result = analyze_with_groq(symbol, rsi, macd, gap, volume_spike)
-        if "利益の出る確率：" in result:
-            chart = generate_chart(prices, symbol)
-            send_telegram(chart, f"📉 {symbol} ショート分析\n\n{result}")
-            new_notify.add(symbol)
+        if not notified:
+            print("[INFO] 通知対象がなかったためTelegram通知なし")
 
-    save_notified(notified | new_notify)
-    if new_notify:
-        log(f"[INFO] 通知済み: {len(new_notify)}件")
-    else:
-        log("[INFO] 通知対象がなかったためTelegram通知なし")
-    return "OK", 200
+    except Exception as e:
+        print("[ERROR]", str(e))
+        send_telegram_message(f"Bot実行中にエラーが発生しました: {e}")
+
+    return "OK"
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=10000)
