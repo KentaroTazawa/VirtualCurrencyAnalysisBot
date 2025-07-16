@@ -7,7 +7,7 @@ from io import BytesIO
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from flask import Flask, request
+from flask import Flask
 
 load_dotenv()
 
@@ -130,7 +130,7 @@ def save_notified(pairs):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
-@app.route("/", methods=["POST", "GET"])
+@app.route("/", methods=["GET"])
 def run_analysis():
     log("[INFO] 処理開始")
     notified = load_notified()
