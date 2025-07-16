@@ -1,7 +1,8 @@
 flask
+gunicorn
 requests
-python-dotenv
+pillow
 matplotlib
 pandas
-numpy
-gunicorn
+groq
+python-dotenv
