@@ -18,7 +18,7 @@ app = Flask(__name__)
 OKX_BASE_URL = "https://www.okx.com"
 JST = timezone("Asia/Tokyo")
 NOTIFIED_FILE = "notified_pairs.json"
-NOTIFY_INTERVAL_SEC = 3600  # 1時間
+NOTIFY_INTERVAL_SEC = 3600  # 1時間（通知抑制）
 
 # ----------------------------------------
 # データ取得・指標計算
@@ -32,7 +32,10 @@ def fetch_symbols():
 def fetch_ohlcv(symbol):
     url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     res = requests.get(url).json()
-    df = pd.DataFrame(res["data"], columns=["timestamp", "open", "high", "low", "close", "volume"])
+    data = res["data"]
+    if not data or len(data[0]) != 9:
+        raise ValueError(f"{symbol} → 不正なデータ形式（{len(data[0])}列）")
+    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "volCcy", "volCcyQuote", "confirm"])
     df = df.iloc[::-1].copy()
     df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
     return df
@@ -83,7 +86,7 @@ def was_notified_recently(symbol, notified_dict):
     return last and (now - last) < NOTIFY_INTERVAL_SEC
 
 # ----------------------------------------
-# 通知・Groq・描画
+# Groq分析・Telegram通知
 # ----------------------------------------
 
 def ask_groq(symbol, df):
@@ -132,6 +135,7 @@ def send_telegram(text, df=None, symbol=None):
         buf.seek(0)
         photo_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
         requests.post(photo_url, data={"chat_id": TELEGRAM_CHAT_ID}, files={"photo": buf})
+        plt.close()
 
 # ----------------------------------------
 # Flaskルート
