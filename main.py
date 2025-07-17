@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 from flask import Flask, jsonify
-from datetime import datetime, timedelta
+from datetime import datetime
 from io import BytesIO
 from pytz import timezone
 
@@ -15,12 +15,13 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 app = Flask(__name__)
-
 OKX_BASE_URL = "https://www.okx.com"
 JST = timezone("Asia/Tokyo")
+NOTIFIED_FILE = "notified_pairs.json"
+NOTIFY_INTERVAL_SEC = 3600  # 1時間
 
 # ----------------------------------------
-# 各種ユーティリティ関数
+# データ取得・指標計算
 # ----------------------------------------
 
 def fetch_symbols():
@@ -38,8 +39,8 @@ def fetch_ohlcv(symbol):
 
 def compute_rsi(series, period=14):
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    gain = delta.where(delta > 0, 0).rolling(period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
@@ -59,45 +60,31 @@ def calculate_indicators(df):
     df["ma25"] = df["close"].rolling(window=25).mean()
     df["disparity"] = (df["close"] - df["ma25"]) / df["ma25"] * 100
     df["vol_ma"] = df["volume"].rolling(window=5).mean()
-    df["vol_spike"] = df["volume"] > df["vol_ma"] * 1.2  # 緩和: 1.5 → 1.2
+    df["vol_spike"] = df["volume"] > df["vol_ma"] * 1.5
     return df
 
+# ----------------------------------------
+# 通知履歴管理
+# ----------------------------------------
+
 def load_notified():
-    if os.path.exists("notified_pairs.json"):
-        with open("notified_pairs.json", "r") as f:
+    if os.path.exists(NOTIFIED_FILE):
+        with open(NOTIFIED_FILE, "r") as f:
             return json.load(f)
     return {}
 
-def save_notified(notified_dict):
-    with open("notified_pairs.json", "w") as f:
-        json.dump(notified_dict, f)
+def save_notified(data):
+    with open(NOTIFIED_FILE, "w") as f:
+        json.dump(data, f)
 
-def was_notified_recently(symbol, notified_dict, minutes=60):
-    now = datetime.now(JST)
-    ts_str = notified_dict.get(symbol)
-    if ts_str:
-        last_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-        return now - last_time < timedelta(minutes=minutes)
-    return False
+def was_notified_recently(symbol, notified_dict):
+    now = time.time()
+    last = notified_dict.get(symbol)
+    return last and (now - last) < NOTIFY_INTERVAL_SEC
 
-def filter_symbols(symbols, notified_dict):
-    filtered = []
-    for sym in symbols:
-        if was_notified_recently(sym, notified_dict):
-            continue
-        try:
-            df = fetch_ohlcv(sym)
-            df = calculate_indicators(df)
-            if (
-                df["rsi"].iloc[-1] >= 65 and
-                is_dead_cross(df["macd"], df["signal"]) and
-                df["disparity"].iloc[-1] > 3 and
-                df["vol_spike"].iloc[-1]
-            ):
-                filtered.append((sym, df))
-        except Exception as e:
-            print(f"[ERROR] {sym} → {e}")
-    return filtered
+# ----------------------------------------
+# 通知・Groq・描画
+# ----------------------------------------
 
 def ask_groq(symbol, df):
     prompt = f"""
@@ -130,11 +117,7 @@ def ask_groq(symbol, df):
 
 def send_telegram(text, df=None, symbol=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
 
     if df is not None and symbol:
@@ -147,14 +130,11 @@ def send_telegram(text, df=None, symbol=None):
         buf = BytesIO()
         plt.savefig(buf, format="png")
         buf.seek(0)
-
         photo_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-        files = {"photo": buf}
-        data = {"chat_id": TELEGRAM_CHAT_ID}
-        requests.post(photo_url, data=data, files=files)
+        requests.post(photo_url, data={"chat_id": TELEGRAM_CHAT_ID}, files={"photo": buf})
 
 # ----------------------------------------
-# Flaskエンドポイント
+# Flaskルート
 # ----------------------------------------
 
 @app.route("/")
@@ -165,26 +145,32 @@ def health():
 def run_analysis():
     print("[INFO] 処理開始")
     symbols = fetch_symbols()
-    notified = load_notified()
-    filtered = filter_symbols(symbols, notified)
-    print(f"[INFO] 通知対象: {[sym for sym, _ in filtered]}")
+    notified_dict = load_notified()
+    now = time.time()
 
-    for sym, df in filtered:
+    for sym in symbols:
         try:
-            result = ask_groq(sym, df)
-            if "はい" in result and "利益の出る確率" in result:
-                prob = int(result.split("利益の出る確率")[1].split("%")[0].strip("：: "))
-                if prob >= 65:
-                    send_telegram(f"【{sym} 分析結果】\n{result}", df, sym)
-                    notified[sym] = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+            if was_notified_recently(sym, notified_dict):
+                continue
+            df = fetch_ohlcv(sym)
+            df = calculate_indicators(df)
+            if (
+                df["rsi"].iloc[-1] >= 65 and
+                is_dead_cross(df["macd"], df["signal"]) and
+                df["disparity"].iloc[-1] > 3 and
+                df["vol_spike"].iloc[-1]
+            ):
+                result = ask_groq(sym, df)
+                if "はい" in result and "利益の出る確率" in result:
+                    prob = int(result.split("利益の出る確率")[1].split("%")[0].strip("：: "))
+                    if prob >= 65:
+                        send_telegram(f"【{sym} 分析結果】\n{result}", df, sym)
+                        notified_dict[sym] = now
         except Exception as e:
-            print(f"[ERROR] 通知処理 → {e}")
-            continue
+            print(f"[ERROR] {sym} → {e}")
 
-    save_notified(notified)
+    save_notified(notified_dict)
     return jsonify({"status": "done"}), 200
-
-# ----------------------------------------
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
