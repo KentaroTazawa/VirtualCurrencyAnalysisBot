@@ -1,8 +1,5 @@
-flask==2.3.3
-gunicorn==21.2.0
-requests==2.31.0
-pillow==10.3.0
-matplotlib==3.8.4
-pandas==2.2.2
-python-dotenv==1.0.1
-groq
+flask
+gunicorn
+requests
+pandas
+python-dotenv
