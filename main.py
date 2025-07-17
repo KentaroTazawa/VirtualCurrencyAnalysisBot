@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 from flask import Flask, jsonify
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from pytz import timezone
 
@@ -26,31 +26,14 @@ JST = timezone("Asia/Tokyo")
 def fetch_symbols():
     url = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
     res = requests.get(url).json()
-    symbols = [
-        x["instId"]
-        for x in res["data"]
-        if x["instId"].endswith("USDT-SWAP")
-    ]
-    return symbols
+    return [x["instId"] for x in res["data"] if x["instId"].endswith("USDT-SWAP")]
 
 def fetch_ohlcv(symbol):
     url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     res = requests.get(url).json()
-    df = pd.DataFrame(
-        res["data"],
-        columns=["timestamp", "open", "high", "low", "close", "volume"]
-    )
+    df = pd.DataFrame(res["data"], columns=["timestamp", "open", "high", "low", "close", "volume"])
     df = df.iloc[::-1].copy()
     df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-    return df
-
-def calculate_indicators(df):
-    df["rsi"] = compute_rsi(df["close"])
-    df["macd"], df["signal"] = compute_macd(df["close"])
-    df["ma25"] = df["close"].rolling(window=25).mean()
-    df["disparity"] = (df["close"] - df["ma25"]) / df["ma25"] * 100
-    df["vol_ma"] = df["volume"].rolling(window=5).mean()
-    df["vol_spike"] = df["volume"] > df["vol_ma"] * 1.5
     return df
 
 def compute_rsi(series, period=14):
@@ -70,16 +53,45 @@ def compute_macd(series):
 def is_dead_cross(macd, signal):
     return macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]
 
-def filter_symbols(symbols):
+def calculate_indicators(df):
+    df["rsi"] = compute_rsi(df["close"])
+    df["macd"], df["signal"] = compute_macd(df["close"])
+    df["ma25"] = df["close"].rolling(window=25).mean()
+    df["disparity"] = (df["close"] - df["ma25"]) / df["ma25"] * 100
+    df["vol_ma"] = df["volume"].rolling(window=5).mean()
+    df["vol_spike"] = df["volume"] > df["vol_ma"] * 1.2  # 緩和: 1.5 → 1.2
+    return df
+
+def load_notified():
+    if os.path.exists("notified_pairs.json"):
+        with open("notified_pairs.json", "r") as f:
+            return json.load(f)
+    return {}
+
+def save_notified(notified_dict):
+    with open("notified_pairs.json", "w") as f:
+        json.dump(notified_dict, f)
+
+def was_notified_recently(symbol, notified_dict, minutes=60):
+    now = datetime.now(JST)
+    ts_str = notified_dict.get(symbol)
+    if ts_str:
+        last_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        return now - last_time < timedelta(minutes=minutes)
+    return False
+
+def filter_symbols(symbols, notified_dict):
     filtered = []
     for sym in symbols:
+        if was_notified_recently(sym, notified_dict):
+            continue
         try:
             df = fetch_ohlcv(sym)
             df = calculate_indicators(df)
             if (
-                df["rsi"].iloc[-1] >= 70 and
+                df["rsi"].iloc[-1] >= 65 and
                 is_dead_cross(df["macd"], df["signal"]) and
-                df["disparity"].iloc[-1] > 5 and
+                df["disparity"].iloc[-1] > 3 and
                 df["vol_spike"].iloc[-1]
             ):
                 filtered.append((sym, df))
@@ -141,25 +153,6 @@ def send_telegram(text, df=None, symbol=None):
         data = {"chat_id": TELEGRAM_CHAT_ID}
         requests.post(photo_url, data=data, files=files)
 
-def load_notified():
-    today = datetime.now(JST).strftime("%Y-%m-%d")
-    if os.path.exists("notified_pairs.json"):
-        with open("notified_pairs.json", "r") as f:
-            data = json.load(f)
-    else:
-        data = {}
-    return data.get(today, [])
-
-def save_notified(pairs):
-    today = datetime.now(JST).strftime("%Y-%m-%d")
-    data = {}
-    if os.path.exists("notified_pairs.json"):
-        with open("notified_pairs.json", "r") as f:
-            data = json.load(f)
-    data[today] = pairs
-    with open("notified_pairs.json", "w") as f:
-        json.dump(data, f)
-
 # ----------------------------------------
 # Flaskエンドポイント
 # ----------------------------------------
@@ -172,23 +165,21 @@ def health():
 def run_analysis():
     print("[INFO] 処理開始")
     symbols = fetch_symbols()
-    filtered = filter_symbols(symbols)
-    print(f"[INFO] 通知対象: {[sym for sym, _ in filtered]}")
     notified = load_notified()
+    filtered = filter_symbols(symbols, notified)
+    print(f"[INFO] 通知対象: {[sym for sym, _ in filtered]}")
 
     for sym, df in filtered:
-        if sym in notified:
-            continue
-        result = ask_groq(sym, df)
-        if "はい" in result and "利益の出る確率" in result:
-            try:
+        try:
+            result = ask_groq(sym, df)
+            if "はい" in result and "利益の出る確率" in result:
                 prob = int(result.split("利益の出る確率")[1].split("%")[0].strip("：: "))
-                if prob >= 80:
+                if prob >= 65:
                     send_telegram(f"【{sym} 分析結果】\n{result}", df, sym)
-                    notified.append(sym)
-            except Exception as e:
-                print(f"[ERROR] 通知処理 → {e}")
-                continue
+                    notified[sym] = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception as e:
+            print(f"[ERROR] 通知処理 → {e}")
+            continue
 
     save_notified(notified)
     return jsonify({"status": "done"}), 200
