@@ -1,3 +1,4 @@
+
 import os
 import json
 import time
@@ -13,15 +14,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OKX_BASE_URL = "https://www.okx.com"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NOTIFIED_FILE = "notified_pairs.json"
 
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
-# --- 通知履歴読み込み ---
 def load_notified():
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE, "r") as f:
@@ -32,20 +32,28 @@ def save_notified(data):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
-# --- OKXからOHLCV取得 ---
 def fetch_ohlcv(symbol):
     url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     res = requests.get(url).json()
+    data = res.get("data")
 
-    if not res.get("data") or len(res["data"]) < 30:
+    if not data or len(data) < 30:
         raise ValueError(f"{symbol} のOHLCVデータが不足または存在しません")
 
-    df = pd.DataFrame(res["data"], columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df = pd.DataFrame(data)
+    df.columns = ["col_" + str(i) for i in range(len(df.columns))]  # 一時カラム名を付与
+    df = df.rename(columns={
+        "col_0": "timestamp",
+        "col_1": "open",
+        "col_2": "high",
+        "col_3": "low",
+        "col_4": "close",
+        "col_5": "volume"
+    })
     df = df.iloc[::-1].copy()
     df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
     return df
 
-# --- 指標計算 ---
 def calculate_indicators(df):
     if df.empty or len(df) < 26:
         raise ValueError("十分なデータがありません")
@@ -65,7 +73,6 @@ def calculate_indicators(df):
 
     return df
 
-# --- チャート画像生成 ---
 def generate_chart(df, symbol):
     plt.figure(figsize=(10, 4))
     plt.plot(df["close"], label="Close Price", color="black")
@@ -79,25 +86,20 @@ def generate_chart(df, symbol):
     plt.close()
     return image_path
 
-# --- Groq でシグナル分析 ---
 def analyze_with_groq(df):
-    df_trimmed = df[["close", "macd", "signal", "rsi"]].tail(30).copy()
-    df_trimmed.reset_index(drop=True, inplace=True)
-    df_str = df_trimmed.to_string(index=False)
-
+    df_str = df[["close", "macd", "signal", "rsi"]].tail(30).to_string(index=False)
     prompt = f"""
 以下は仮想通貨の15分足データです。MACD・Signal・RSIの観点から、買いシグナルまたは売りシグナルが出ているかを判断してください。
 出力は以下のJSON形式で返してください：
 {{
   "signal": "buy" または "sell" または "neutral",
-  "confidence": 数値 (0〜100)
+  "confidence": 数値（0～100）
 }}
 
-以下がデータです：
-
+```
 {df_str}
+```
 """
-
     chat_completion = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model="llama3-8b-8192"
@@ -109,22 +111,14 @@ def analyze_with_groq(df):
     except Exception:
         return {"signal": "neutral", "confidence": 0}
 
-# --- Telegram 通知 ---
 def send_to_telegram(symbol, signal, confidence, image_path):
-    message = f"📈 <b>{symbol}</b>\nシグナル: <b>{signal.upper()}</b>\n信頼度: {confidence}%"
-    send_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    with open(image_path, "rb") as f:
+        files = {"photo": f}
+        caption = f"**{symbol}** に {signal.upper()} シグナル\n信頼度: {confidence}%"
+        data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "parse_mode": "Markdown"}
+        requests.post(url, data=data, files=files)
 
-    with open(image_path, "rb") as image:
-        files = {"photo": image}
-        data = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "caption": message,
-            "parse_mode": "HTML"
-        }
-        res = requests.post(send_url, data=data, files=files)
-        print(f"[TELEGRAM] status={res.status_code}")
-
-# --- メイン処理 ---
 def run_analysis():
     print("[INFO] 処理開始")
     notified = load_notified()
@@ -145,6 +139,7 @@ def run_analysis():
 
             df = fetch_ohlcv(symbol)
             df = calculate_indicators(df)
+
             result = analyze_with_groq(df)
 
             if result["signal"] in ["buy", "sell"] and result["confidence"] >= 65:
@@ -160,7 +155,6 @@ def run_analysis():
     save_notified(notified)
     print("[INFO] 処理完了")
 
-# --- Flaskエンドポイント ---
 @app.route("/")
 def index():
     return "OK"
@@ -170,6 +164,5 @@ def run_analysis_route():
     run_analysis()
     return "Analysis completed"
 
-# --- 実行用 ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
