@@ -170,7 +170,7 @@ def run_analysis():
                 result = analyze_with_groq(df, direction)
                 key = f"{'ショート' if direction == 'short' else 'ロング'}すべきか"
 
-                if result.get(key) == "はい" and result.get("利益の出る確率", 0) >= 70:
+                if result.get(key) == "はい" and result.get("利益の出る確率", 0) >= 60:
                     send_to_telegram(symbol, result, direction)
                     notified_in_memory[symbol] = now
 
