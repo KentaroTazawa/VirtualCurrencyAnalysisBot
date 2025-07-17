@@ -1,75 +1,26 @@
 import os
 import json
 import time
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
 import matplotlib.pyplot as plt
-from flask import Flask, jsonify
-from datetime import datetime
-from io import BytesIO
-from pytz import timezone
+from flask import Flask
+from PIL import Image
+from groq import Groq
+from dotenv import load_dotenv
 
-# 環境変数の読み込み
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+load_dotenv()
 
-app = Flask(__name__)
 OKX_BASE_URL = "https://www.okx.com"
-JST = timezone("Asia/Tokyo")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NOTIFIED_FILE = "notified_pairs.json"
-NOTIFY_INTERVAL_SEC = 3600  # 1時間（通知抑制）
 
-# ----------------------------------------
-# データ取得・指標計算
-# ----------------------------------------
+client = Groq(api_key=GROQ_API_KEY)
+app = Flask(__name__)
 
-def fetch_symbols():
-    url = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
-    res = requests.get(url).json()
-    return [x["instId"] for x in res["data"] if x["instId"].endswith("USDT-SWAP")]
-
-def fetch_ohlcv(symbol):
-    url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
-    res = requests.get(url).json()
-    data = res["data"]
-    if not data or len(data[0]) != 9:
-        raise ValueError(f"{symbol} → 不正なデータ形式（{len(data[0])}列）")
-    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "volCcy", "volCcyQuote", "confirm"])
-    df = df.iloc[::-1].copy()
-    df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-    return df
-
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0).rolling(period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def compute_macd(series):
-    ema12 = series.ewm(span=12, adjust=False).mean()
-    ema26 = series.ewm(span=26, adjust=False).mean()
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9, adjust=False).mean()
-    return macd, signal
-
-def is_dead_cross(macd, signal):
-    return macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]
-
-def calculate_indicators(df):
-    df["rsi"] = compute_rsi(df["close"])
-    df["macd"], df["signal"] = compute_macd(df["close"])
-    df["ma25"] = df["close"].rolling(window=25).mean()
-    df["disparity"] = (df["close"] - df["ma25"]) / df["ma25"] * 100
-    df["vol_ma"] = df["volume"].rolling(window=5).mean()
-    df["vol_spike"] = df["volume"] > df["vol_ma"] * 1.5
-    return df
-
-# ----------------------------------------
-# 通知履歴管理
-# ----------------------------------------
-
+# --- JSONによる通知履歴の読み書き ---
 def load_notified():
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE, "r") as f:
@@ -80,102 +31,141 @@ def save_notified(data):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
-def was_notified_recently(symbol, notified_dict):
-    now = time.time()
-    last = notified_dict.get(symbol)
-    return last and (now - last) < NOTIFY_INTERVAL_SEC
+# --- データ取得 ---
+def fetch_ohlcv(symbol):
+    url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
+    res = requests.get(url).json()
 
-# ----------------------------------------
-# Groq分析・Telegram通知
-# ----------------------------------------
+    if not res.get("data") or len(res["data"]) < 30:
+        raise ValueError(f"{symbol} のOHLCVデータが不足または存在しません")
 
-def ask_groq(symbol, df):
+    df = pd.DataFrame(res["data"], columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df = df.iloc[::-1].copy()
+    df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
+    return df
+
+# --- テクニカル指標計算 ---
+def calculate_indicators(df):
+    if df.empty or len(df) < 26:
+        raise ValueError("十分なデータがありません")
+
+    df["ema12"] = df["close"].ewm(span=12).mean()
+    df["ema26"] = df["close"].ewm(span=26).mean()
+    df["macd"] = df["ema12"] - df["ema26"]
+    df["signal"] = df["macd"].ewm(span=9).mean()
+
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    return df
+
+# --- チャート画像作成 ---
+def generate_chart(df, symbol):
+    plt.figure(figsize=(10, 4))
+    plt.plot(df["close"], label="Close Price", color="black")
+    plt.title(f"{symbol} Close Price")
+    plt.xlabel("Index")
+    plt.ylabel("Price")
+    plt.grid(True)
+    plt.legend()
+    image_path = f"{symbol.replace('/', '_')}.png"
+    plt.savefig(image_path)
+    plt.close()
+    return image_path
+
+# --- Groq で分析 ---
+def analyze_with_groq(df):
+    df_str = df[["close", "macd", "signal", "rsi"]].tail(30).to_string(index=False)
+
     prompt = f"""
-以下は{symbol}の15分足チャート分析結果です。
-- RSI: {df['rsi'].iloc[-1]:.2f}
-- MACD: {df['macd'].iloc[-1]:.5f}
-- シグナル: {df['signal'].iloc[-1]:.5f}
-- 乖離率: {df['disparity'].iloc[-1]:.2f}%
-- 出来高急増: {"あり" if df["vol_spike"].iloc[-1] else "なし"}
+以下は仮想通貨の15分足データです。MACD・Signal・RSIの観点から、買いシグナルまたは売りシグナルが出ているかを判断してください。
+出力は以下のJSON形式で返してください：
+{{
+  "signal": "buy" または "sell" または "neutral",
+  "confidence": 数値（0～100）
+}}
 
-この情報を元に、次の形式でショートすべきか判断してください：
-
-・ショートすべきか（はい/いいえ）：
-・理由：
-・利確ライン（TP）：
-・損切ライン（SL）：
-・利益の出る確率（%）：
+```
+{df_str}
+```
 """
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+
+    chat_completion = client.chat.completions.create(
+        messages=[{"role": "user", "content": prompt}],
+        model="llama3-8b-8192"
+    )
+
+    try:
+        result = json.loads(chat_completion.choices[0].message.content)
+        return result
+    except Exception:
+        return {"signal": "neutral", "confidence": 0}
+
+# --- Discord通知 ---
+def send_to_discord(symbol, signal, confidence, image_path):
+    with open(image_path, "rb") as f:
+        image_data = f.read()
+
+    filename = os.path.basename(image_path)
     payload = {
-        "model": "llama3-70b-8192",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7
+        "content": f"**{symbol}** に {signal.upper()} シグナル\n信頼度: {confidence}%",
     }
-    res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-    return res.json()["choices"][0]["message"]["content"]
+    files = {"file": (filename, image_data)}
 
-def send_telegram(text, df=None, symbol=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    requests.post(url, json=payload)
+    requests.post(DISCORD_WEBHOOK_URL, data=payload, files=files)
 
-    if df is not None and symbol:
-        plt.figure(figsize=(10, 4))
-        plt.plot(df["close"], label="Close")
-        plt.plot(df["ma25"], label="MA25", linestyle="--")
-        plt.title(f"{symbol} - 15min")
-        plt.legend()
-        plt.grid()
-        buf = BytesIO()
-        plt.savefig(buf, format="png")
-        buf.seek(0)
-        photo_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-        requests.post(photo_url, data={"chat_id": TELEGRAM_CHAT_ID}, files={"photo": buf})
-        plt.close()
-
-# ----------------------------------------
-# Flaskルート
-# ----------------------------------------
-
-@app.route("/")
-def health():
-    return "OK", 200
-
-@app.route("/run_analysis")
+# --- メイン処理 ---
 def run_analysis():
     print("[INFO] 処理開始")
-    symbols = fetch_symbols()
-    notified_dict = load_notified()
-    now = time.time()
+    notified = load_notified()
+    updated_notified = {}
 
-    for sym in symbols:
+    url = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
+    symbols = [item["instId"] for item in requests.get(url).json()["data"] if item["instId"].endswith("-USDT-SWAP")]
+
+    now = datetime.utcnow()
+
+    for symbol in symbols:
         try:
-            if was_notified_recently(sym, notified_dict):
-                continue
-            df = fetch_ohlcv(sym)
+            last_notified = notified.get(symbol)
+            if last_notified:
+                last_dt = datetime.strptime(last_notified, "%Y-%m-%d %H:%M:%S")
+                if now - last_dt < timedelta(hours=1):
+                    continue
+
+            df = fetch_ohlcv(symbol)
             df = calculate_indicators(df)
-            if (
-                df["rsi"].iloc[-1] >= 65 and
-                is_dead_cross(df["macd"], df["signal"]) and
-                df["disparity"].iloc[-1] > 3 and
-                df["vol_spike"].iloc[-1]
-            ):
-                result = ask_groq(sym, df)
-                if "はい" in result and "利益の出る確率" in result:
-                    prob = int(result.split("利益の出る確率")[1].split("%")[0].strip("：: "))
-                    if prob >= 65:
-                        send_telegram(f"【{sym} 分析結果】\n{result}", df, sym)
-                        notified_dict[sym] = now
+
+            result = analyze_with_groq(df)
+
+            if result["signal"] in ["buy", "sell"] and result["confidence"] >= 65:
+                image_path = generate_chart(df, symbol)
+                send_to_discord(symbol, result["signal"], result["confidence"], image_path)
+                updated_notified[symbol] = now.strftime("%Y-%m-%d %H:%M:%S")
+                print(f"[NOTIFY] {symbol} - {result}")
+
         except Exception as e:
-            print(f"[ERROR] {sym} → {e}")
+            print(f"[ERROR] {symbol} → {e}")
 
-    save_notified(notified_dict)
-    return jsonify({"status": "done"}), 200
+    notified.update(updated_notified)
+    save_notified(notified)
+    print("[INFO] 処理完了")
 
+# --- Flask ルート ---
+@app.route("/")
+def index():
+    return "OK"
+
+@app.route("/run_analysis")
+def run_analysis_route():
+    run_analysis()
+    return "Analysis completed"
+
+# --- ポート指定 ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
