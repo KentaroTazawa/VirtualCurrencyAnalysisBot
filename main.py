@@ -13,14 +13,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OKX_BASE_URL = "https://www.okx.com"
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 NOTIFIED_FILE = "notified_pairs.json"
 
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
-# --- JSONによる通知履歴の読み書き ---
+# --- 通知履歴読み込み ---
 def load_notified():
     if os.path.exists(NOTIFIED_FILE):
         with open(NOTIFIED_FILE, "r") as f:
@@ -31,7 +32,7 @@ def save_notified(data):
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(data, f)
 
-# --- データ取得 ---
+# --- OKXからOHLCV取得 ---
 def fetch_ohlcv(symbol):
     url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     res = requests.get(url).json()
@@ -44,7 +45,7 @@ def fetch_ohlcv(symbol):
     df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
     return df
 
-# --- テクニカル指標計算 ---
+# --- 指標計算 ---
 def calculate_indicators(df):
     if df.empty or len(df) < 26:
         raise ValueError("十分なデータがありません")
@@ -64,7 +65,7 @@ def calculate_indicators(df):
 
     return df
 
-# --- チャート画像作成 ---
+# --- チャート画像生成 ---
 def generate_chart(df, symbol):
     plt.figure(figsize=(10, 4))
     plt.plot(df["close"], label="Close Price", color="black")
@@ -78,21 +79,23 @@ def generate_chart(df, symbol):
     plt.close()
     return image_path
 
-# --- Groq で分析 ---
+# --- Groq でシグナル分析 ---
 def analyze_with_groq(df):
-    df_str = df[["close", "macd", "signal", "rsi"]].tail(30).to_string(index=False)
+    df_trimmed = df[["close", "macd", "signal", "rsi"]].tail(30).copy()
+    df_trimmed.reset_index(drop=True, inplace=True)
+    df_str = df_trimmed.to_string(index=False)
 
     prompt = f"""
 以下は仮想通貨の15分足データです。MACD・Signal・RSIの観点から、買いシグナルまたは売りシグナルが出ているかを判断してください。
 出力は以下のJSON形式で返してください：
 {{
   "signal": "buy" または "sell" または "neutral",
-  "confidence": 数値（0～100）
+  "confidence": 数値 (0〜100)
 }}
 
-```
+以下がデータです：
+
 {df_str}
-```
 """
 
     chat_completion = client.chat.completions.create(
@@ -106,18 +109,20 @@ def analyze_with_groq(df):
     except Exception:
         return {"signal": "neutral", "confidence": 0}
 
-# --- Discord通知 ---
-def send_to_discord(symbol, signal, confidence, image_path):
-    with open(image_path, "rb") as f:
-        image_data = f.read()
+# --- Telegram 通知 ---
+def send_to_telegram(symbol, signal, confidence, image_path):
+    message = f"📈 <b>{symbol}</b>\nシグナル: <b>{signal.upper()}</b>\n信頼度: {confidence}%"
+    send_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
 
-    filename = os.path.basename(image_path)
-    payload = {
-        "content": f"**{symbol}** に {signal.upper()} シグナル\n信頼度: {confidence}%",
-    }
-    files = {"file": (filename, image_data)}
-
-    requests.post(DISCORD_WEBHOOK_URL, data=payload, files=files)
+    with open(image_path, "rb") as image:
+        files = {"photo": image}
+        data = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "caption": message,
+            "parse_mode": "HTML"
+        }
+        res = requests.post(send_url, data=data, files=files)
+        print(f"[TELEGRAM] status={res.status_code}")
 
 # --- メイン処理 ---
 def run_analysis():
@@ -140,12 +145,11 @@ def run_analysis():
 
             df = fetch_ohlcv(symbol)
             df = calculate_indicators(df)
-
             result = analyze_with_groq(df)
 
             if result["signal"] in ["buy", "sell"] and result["confidence"] >= 65:
                 image_path = generate_chart(df, symbol)
-                send_to_discord(symbol, result["signal"], result["confidence"], image_path)
+                send_to_telegram(symbol, result["signal"], result["confidence"], image_path)
                 updated_notified[symbol] = now.strftime("%Y-%m-%d %H:%M:%S")
                 print(f"[NOTIFY] {symbol} - {result}")
 
@@ -156,7 +160,7 @@ def run_analysis():
     save_notified(notified)
     print("[INFO] 処理完了")
 
-# --- Flask ルート ---
+# --- Flaskエンドポイント ---
 @app.route("/")
 def index():
     return "OK"
@@ -166,6 +170,6 @@ def run_analysis_route():
     run_analysis()
     return "Analysis completed"
 
-# --- ポート指定 ---
+# --- 実行用 ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
