@@ -1,3 +1,6 @@
+
+# app.py
+
 import os
 import json
 import time
@@ -27,8 +30,7 @@ def fetch_ohlcv(symbol):
         data = res.json().get("data")
         if not data or len(data) < 30:
             return None
-    except Exception as e:
-        print(f"[ERROR] {symbol} - OHLCV取得失敗: {e}")
+    except:
         return None
 
     df = pd.DataFrame(data)
@@ -65,38 +67,46 @@ def calculate_indicators(df):
 
     return df
 
-def passes_filters(df, symbol):
+def passes_filters(df, direction):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
-    rsi_cond = latest["rsi"] >= 60
-    macd_cross = prev["macd"] > prev["signal"] and latest["macd"] < latest["signal"]
-    disparity_cond = latest["disparity"] > 1.5
-    volume_cond = latest["volume"] > latest["vol_avg5"] * 1.1
+    if direction == "short":
+        rsi_cond = latest["rsi"] >= 60
+        macd_cross = prev["macd"] > prev["signal"] and latest["macd"] < latest["signal"]
+        disparity_cond = latest["disparity"] > 1.5
+        volume_cond = latest["volume"] > latest["vol_avg5"] * 1.2
+    elif direction == "long":
+        rsi_cond = latest["rsi"] <= 40
+        macd_cross = prev["macd"] < prev["signal"] and latest["macd"] > latest["signal"]
+        disparity_cond = latest["disparity"] < -1.5
+        volume_cond = latest["volume"] > latest["vol_avg5"] * 1.2
+    else:
+        return False
 
-    print(f"[FILTER] {symbol.split('-')[0]},RSI={latest['rsi']:.2f}, MACDクロス={macd_cross}, 乖離率={latest['disparity']:.2f}%, Volume急増={volume_cond}")
+    print(f"[FILTER] {direction.upper()} {latest['rsi']:.2f}, MACDクロス={macd_cross}, 乖離率={latest['disparity']:.2f}%, Volume急増={volume_cond}")
     return rsi_cond and macd_cross and disparity_cond and volume_cond
 
-def analyze_with_groq(df):
+def analyze_with_groq(df, direction):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
     prompt = f"""
 以下はある仮想通貨ペアの直近15分足のテクニカル指標です。
-この情報に基づいて、ショートエントリーすべきかを分析してください。
+この情報に基づいて、{ 'ロング' if direction == 'long' else 'ショート' }エントリーすべきかを分析してください。
 
 RSI: {latest['rsi']:.2f}
 MACD: {latest['macd']:.6f}, Signal: {latest['signal']:.6f}
-MACDクロス: {'デッドクロス' if prev['macd'] > prev['signal'] and latest['macd'] < latest['signal'] else 'なし'}
+MACDクロス: {'ゴールデンクロス' if prev['macd'] < prev['signal'] and latest['macd'] > latest['signal'] else ('デッドクロス' if prev['macd'] > prev['signal'] and latest['macd'] < latest['signal'] else 'なし')}
 移動平均乖離率: {latest['disparity']:.2f}%
-出来高急増: {'はい' if latest['volume'] > latest['vol_avg5'] * 1.1 else 'いいえ'}
+出来高急増: {'はい' if latest['volume'] > latest['vol_avg5'] * 1.2 else 'いいえ'}
 
 以下の形式でJSONで回答してください：
 {{
-  "ショートすべきか": "はい" または "いいえ",
+  "{ 'ロング' if direction == 'long' else 'ショート' }すべきか": "はい" または "いいえ",
   "理由": "〜〜",
-  "利確ライン（TP）": "-x.x%",
-  "損切ライン（SL）": "+x.x%",
+  "利確ライン（TP）": "+x.x%" または "-x.x%",
+  "損切ライン（SL）": "-x.x%" または "+x.x%",
   "利益の出る確率": 数値（0〜100）
 }}
 """
@@ -106,19 +116,23 @@ MACDクロス: {'デッドクロス' if prev['macd'] > prev['signal'] and latest
             messages=[{"role": "user", "content": prompt}]
         )
         result = json.loads(response.choices[0].message.content)
-        print(f"[GROQ] 分析結果: {result}")
         return result
-    except Exception as e:
-        print(f"[ERROR] Groq解析失敗: {e}")
+    except:
         return {}
 
-def send_to_telegram(symbol, result):
+def send_to_telegram(symbol, result, direction):
+    emoji = "📈" if direction == "long" else "📉"
+    title = "ロング" if direction == "long" else "ショート"
     text = (
-        f"\u2b06\ufe0f ショートシグナル検出: {symbol}\n"
-        f"\n"
-        f"- 利益確率: {result.get('利益の出る確率', '?')}%\n"
-        f"- 理由: {result.get('理由', '不明')}\n"
-        f"- TP: {result.get('利確ライン（TP）', '?')} / SL: {result.get('損切ライン（SL）', '?')}\n"
+        f"{emoji} {title}シグナル検出: {symbol}
+
+"
+        f"- 利益確率: {result.get('利益の出る確率', '?')}%
+"
+        f"- 理由: {result.get('理由', '不明')}
+"
+        f"- TP: {result.get('利確ライン（TP）', '?')} / SL: {result.get('損切ライン（SL）', '?')}
+"
     )
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
@@ -128,25 +142,22 @@ def send_to_telegram(symbol, result):
     }
     try:
         requests.post(url, data=data)
-    except Exception as e:
-        print(f"[ERROR] Telegram送信失敗: {e}")
+    except:
+        pass
 
 def run_analysis():
-    print("[INFO] 処理開始")
     now = datetime.utcnow()
 
     try:
         url = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
         symbols = [item["instId"] for item in requests.get(url).json()["data"] if item["instId"].endswith("-USDT-SWAP")]
-        print(f"[INFO] 銘柄数: {len(symbols)} 件")
-    except Exception as e:
-        print(f"[ERROR] 銘柄取得失敗: {e}")
+    except:
         return
 
     for symbol in symbols:
         try:
             last_notified = notified_in_memory.get(symbol)
-            if last_notified and now - last_notified < timedelta(hours=1):
+            if last_notified and now - last_notified < timedelta(minutes=60):
                 continue
 
             df = fetch_ohlcv(symbol)
@@ -155,19 +166,19 @@ def run_analysis():
 
             df = calculate_indicators(df)
 
-            if not passes_filters(df, symbol):
-                continue
+            for direction in ["short", "long"]:
+                if not passes_filters(df, direction):
+                    continue
 
-            result = analyze_with_groq(df)
+                result = analyze_with_groq(df, direction)
+                key = f"{'ショート' if direction == 'short' else 'ロング'}すべきか"
 
-            if result.get("ショートすべきか") == "はい" and result.get("利益の出る確率", 0) >= 60:
-                send_to_telegram(symbol, result)
-                notified_in_memory[symbol] = now
-                print(f"[NOTIFY] {symbol} - 通知完了")
-        except Exception as e:
-            print(f"[ERROR] {symbol} - 処理中に例外: {e}")
+                if result.get(key) == "はい" and result.get("利益の出る確率", 0) >= 70:
+                    send_to_telegram(symbol, result, direction)
+                    notified_in_memory[symbol] = now
 
-    print("[INFO] 処理完了")
+        except:
+            continue
 
 @app.route("/")
 def index():
