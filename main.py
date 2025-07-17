@@ -17,9 +17,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
-
-# 通知済み記録をメモリ上で保持（再起動でリセットされる）
-notified_cache = {}
+notified_in_memory = {}  # メモリ内で通知済み銘柄を保持
 
 def fetch_ohlcv(symbol):
     url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
@@ -27,7 +25,8 @@ def fetch_ohlcv(symbol):
     data = res.get("data")
 
     if not data or len(data) < 30:
-        raise ValueError(f"{symbol} のOHLCVデータが不足または存在しません")
+        print(f"[INFO] {symbol} → OHLCVデータが不足しているためスキップします")
+        return None
 
     df = pd.DataFrame(data)
     df.columns = ["col_" + str(i) for i in range(len(df.columns))]
@@ -58,106 +57,98 @@ def calculate_indicators(df):
     df["rsi"] = 100 - (100 / (1 + rs))
 
     df["ma25"] = df["close"].rolling(window=25).mean()
-    df["disparity"] = ((df["close"] - df["ma25"]) / df["ma25"]) * 100
-
-    df["volume_ma5"] = df["volume"].rolling(window=5).mean()
-    df["volume_surge"] = df["volume"] > (df["volume_ma5"] * 1.3)
+    df["disparity"] = (df["close"] - df["ma25"]) / df["ma25"] * 100
+    df["vol_avg5"] = df["volume"].rolling(window=5).mean()
 
     return df
 
-def passes_filter(df):
-    rsi = df["rsi"].iloc[-1]
-    macd_now = df["macd"].iloc[-1]
-    macd_prev = df["macd"].iloc[-2]
-    signal_now = df["signal"].iloc[-1]
-    signal_prev = df["signal"].iloc[-2]
-    disparity = df["disparity"].iloc[-1]
-    volume_surge = df["volume_surge"].iloc[-1]
+def passes_filters(df):
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
 
-    macd_cross = macd_prev > signal_prev and macd_now < signal_now
+    rsi_cond = latest["rsi"] >= 65
+    macd_cross = prev["macd"] > prev["signal"] and latest["macd"] < latest["signal"]
+    disparity_cond = latest["disparity"] > 3
+    volume_cond = latest["volume"] > latest["vol_avg5"] * 1.3
 
-    return (
-        rsi >= 65 and
-        macd_cross and
-        disparity >= 3.5 and
-        volume_surge
-    )
+    return rsi_cond and macd_cross and disparity_cond and volume_cond
 
 def analyze_with_groq(df):
-    rsi = df["rsi"].iloc[-1]
-    macd_now = df["macd"].iloc[-1]
-    macd_prev = df["macd"].iloc[-2]
-    signal_now = df["signal"].iloc[-1]
-    signal_prev = df["signal"].iloc[-2]
-    disparity = df["disparity"].iloc[-1]
-    volume_now = df["volume"].iloc[-1]
-    volume_avg = df["volume_ma5"].iloc[-1]
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
 
     prompt = f"""
-以下は仮想通貨の15分足データから抽出したテクニカル指標の要約です。
-これらの情報に基づき、ショートポジションを取るべきかどうかを判断してください。
+以下はある仮想通貨ペアの直近15分足のテクニカル指標です。
+この情報に基づいて、ショートエントリーすべきかを分析してください。
 
-- RSI: {rsi:.2f}
-- MACD（前回 → 今回）: {macd_prev:.4f} → {macd_now:.4f}
-- Signal（前回 → 今回）: {signal_prev:.4f} → {signal_now:.4f}
-- 移動平均乖離率（Disparity）: {disparity:.2f}%
-- 出来高: {volume_now:.2f}（直近5本平均: {volume_avg:.2f}）
+RSI: {latest['rsi']:.2f}
+MACD: {latest['macd']:.6f}, Signal: {latest['signal']:.6f}
+MACDクロス: {'デッドクロス' if prev['macd'] > prev['signal'] and latest['macd'] < latest['signal'] else 'なし'}
+移動平均乖離率: {latest['disparity']:.2f}%
+出来高急増: {'はい' if latest['volume'] > latest['vol_avg5'] * 1.3 else 'いいえ'}
 
-出力は以下のJSON形式でお願いします：
+以下の形式でJSONで回答してください：
 {{
   "ショートすべきか": "はい" または "いいえ",
-  "理由": "...",
-  "TP": "-4.0%" のように記述,
-  "SL": "+2.0%" のように記述,
-  "利益の出る確率": 数値（0～100）
+  "理由": "〜〜",
+  "利確ライン（TP）": "-x.x%",
+  "損切ライン（SL）": "+x.x%",
+  "利益の出る確率": 数値（0〜100）
 }}
 """
-    chat_completion = client.chat.completions.create(
-        messages=[{"role": "user", "content": prompt}],
-        model="llama3-70b-8192"
+    response = client.chat.completions.create(
+        model="llama3-70b-8192",
+        messages=[{"role": "user", "content": prompt}]
     )
 
     try:
-        result = json.loads(chat_completion.choices[0].message.content)
-        return result
+        return json.loads(response.choices[0].message.content)
     except Exception:
-        return {"ショートすべきか": "いいえ", "利益の出る確率": 0}
+        return {}
 
 def send_to_telegram(symbol, result):
     text = (
-        f"**{symbol}** にショートシグナル\n"
-        f"理由: {result['理由']}\n"
-        f"利確(TP): {result['TP']} / 損切(SL): {result['SL']}\n"
-        f"勝率: {result['利益の出る確率']}%"
+        f"\u2b06\ufe0f ショートシグナル検出: {symbol}\n"
+        f"\n"
+        f"- 利益確率: {result.get('利益の出る確率', '?')}%\n"
+        f"- 理由: {result.get('理由', '不明')}\n"
+        f"- TP: {result.get('利確ライン（TP）', '?')} / SL: {result.get('損切ライン（SL）', '?')}\n"
     )
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
     requests.post(url, data=data)
 
 def run_analysis():
     print("[INFO] 処理開始")
+    now = datetime.utcnow()
+
     url = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
     symbols = [item["instId"] for item in requests.get(url).json()["data"] if item["instId"].endswith("-USDT-SWAP")]
 
-    now = datetime.utcnow()
-
     for symbol in symbols:
         try:
-            last_notified = notified_cache.get(symbol)
+            last_notified = notified_in_memory.get(symbol)
             if last_notified and now - last_notified < timedelta(hours=1):
                 continue
 
             df = fetch_ohlcv(symbol)
+            if df is None:
+                continue
+
             df = calculate_indicators(df)
 
-            if not passes_filter(df):
+            if not passes_filters(df):
                 continue
 
             result = analyze_with_groq(df)
 
-            if result["ショートすべきか"] == "はい" and result.get("利益の出る確率", 0) >= 70:
+            if result.get("ショートすべきか") == "はい" and result.get("利益の出る確率", 0) >= 70:
                 send_to_telegram(symbol, result)
-                notified_cache[symbol] = now
+                notified_in_memory[symbol] = now
                 print(f"[NOTIFY] {symbol} - {result}")
 
         except Exception as e:
