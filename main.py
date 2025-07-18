@@ -120,17 +120,11 @@ MACDクロス: {'ゴールデンクロス' if prev['macd'] < prev['signal'] and 
 def send_to_telegram(symbol, result, direction):
     emoji = "📈" if direction == "long" else "📉"
     title = "ロング" if direction == "long" else "ショート"
-    text = (
-        f"{emoji} {title}シグナル検出: {symbol}
-
-"
-        f"- 利益確率: {result.get('利益の出る確率', '?')}%
-"
-        f"- 理由: {result.get('理由', '不明')}
-"
-        f"- TP: {result.get('利確ライン（TP）', '?')} / SL: {result.get('損切ライン（SL）', '?')}
-"
-    )
+    text = f"""{emoji} {title}シグナル検出: {symbol}
+- 利益確率: {result.get('利益の出る確率', '?')}%
+- 理由: {result.get('理由', '不明')}
+- TP: {result.get('利確ライン（TP）', '?')} / SL: {result.get('損切ライン（SL）', '?')}
+"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
