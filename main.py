@@ -81,7 +81,6 @@ def passes_filters(df, direction):
     else:
         return False
 
-    print(f"[FILTER] {direction.upper()} {latest['rsi']:.2f}, MACDクロス={macd_cross}, 乖離率={latest['disparity']:.2f}%, Volume急増={volume_cond}")
     return rsi_cond and macd_cross and disparity_cond and volume_cond
 
 def analyze_with_groq(df, direction):
@@ -156,6 +155,14 @@ def run_analysis():
                 continue
 
             df = calculate_indicators(df)
+
+            # ログ出力（1銘柄につき1回）
+            symbol_base = symbol.replace("-USDT-SWAP", "")
+            latest = df.iloc[-1]
+            prev = df.iloc[-2]
+            macd_cross = prev["macd"] != prev["signal"]
+            volume_cond = latest["volume"] > latest["vol_avg5"] * 1.2
+            print(f"[FILTER] {symbol_base},rsi={latest['rsi']:.2f}, MACDX={macd_cross}, 乖離={latest['disparity']:.2f}%, VOL急増={volume_cond}")
 
             for direction in ["short", "long"]:
                 if not passes_filters(df, direction):
