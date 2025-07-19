@@ -185,7 +185,7 @@ def index():
 @app.route("/run_analysis")
 def run_analysis_route():
     run_analysis()
-    return "Analysis completed"
+    return "Analysis completed", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
