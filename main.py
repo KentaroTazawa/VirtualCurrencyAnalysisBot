@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import traceback  # ✅追加
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
@@ -19,6 +20,19 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 
+# ✅ 追加：エラー通知用
+def send_error_to_telegram(error_message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": f"⚠️ エラー発生:\n```\n{error_message}\n```",
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, data=data)
+    except:
+        pass
+
 def fetch_ohlcv(symbol):
     url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     try:
@@ -27,7 +41,8 @@ def fetch_ohlcv(symbol):
         data = res.json().get("data")
         if not data or len(data) < 30:
             return None
-    except:
+    except Exception as e:
+        send_error_to_telegram(f"fetch_ohlcv() でエラー:\n{str(e)}")
         return None
 
     df = pd.DataFrame(data)
@@ -113,7 +128,8 @@ MACDクロス: {'ゴールデンクロス' if prev['macd'] < prev['signal'] and 
         )
         result = json.loads(response.choices[0].message.content)
         return result
-    except:
+    except Exception as e:
+        send_error_to_telegram(f"Groq API エラー:\n{str(e)}")
         return {}
 
 def send_to_telegram(symbol, result, direction):
@@ -132,8 +148,8 @@ def send_to_telegram(symbol, result, direction):
     }
     try:
         requests.post(url, data=data)
-    except:
-        pass
+    except Exception as e:
+        send_error_to_telegram(f"Telegram送信エラー:\n{str(e)}")
 
 def run_analysis():
     now = datetime.utcnow()
@@ -141,7 +157,8 @@ def run_analysis():
     try:
         url = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
         symbols = [item["instId"] for item in requests.get(url).json()["data"] if item["instId"].endswith("-USDT-SWAP")]
-    except:
+    except Exception as e:
+        send_error_to_telegram(f"シンボル取得エラー:\n{str(e)}")
         return
 
     for symbol in symbols:
@@ -156,7 +173,6 @@ def run_analysis():
 
             df = calculate_indicators(df)
 
-            # ログ出力（1銘柄につき1回）
             symbol_base = symbol.replace("-USDT-SWAP", "")
             latest = df.iloc[-1]
             prev = df.iloc[-2]
@@ -175,7 +191,9 @@ def run_analysis():
                     send_to_telegram(symbol, result, direction)
                     notified_in_memory[symbol] = now
 
-        except:
+        except Exception as e:
+            error_detail = traceback.format_exc()
+            send_error_to_telegram(f"{symbol} 処理中の例外:\n{error_detail}")
             continue
 
 @app.route("/")
