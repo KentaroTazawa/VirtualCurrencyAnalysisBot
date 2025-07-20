@@ -106,19 +106,22 @@ def analyze_with_groq(df, direction):
 以下はある仮想通貨ペアの直近15分足のテクニカル指標です。
 この情報に基づいて、{ 'ロング' if direction == 'long' else 'ショート' }エントリーすべきかを分析してください。
 
-RSI: {latest['rsi']:.2f}
-MACD: {latest['macd']:.6f}, Signal: {latest['signal']:.6f}
-MACDクロス: {'ゴールデンクロス' if prev['macd'] < prev['signal'] and latest['macd'] > latest['signal'] else ('デッドクロス' if prev['macd'] > prev['signal'] and latest['macd'] < latest['signal'] else 'なし')}
-移動平均乖離率: {latest['disparity']:.2f}%
-出来高急増: {'はい' if latest['volume'] > latest['vol_avg5'] * 1.2 else 'いいえ'}
+指標の詳細：
+- RSI: {latest['rsi']:.2f}
+- MACD: {latest['macd']:.6f}, Signal: {latest['signal']:.6f}
+- MACDクロス: {'ゴールデンクロス' if prev['macd'] < prev['signal'] and latest['macd'] > latest['signal'] else ('デッドクロス' if prev['macd'] > prev['signal'] and latest['macd'] < latest['signal'] else 'なし')}
+- 移動平均乖離率: {latest['disparity']:.2f}%
+- 出来高急増: {'はい' if latest['volume'] > latest['vol_avg5'] * 1.2 else 'いいえ'}
 
+上記の指標がどれだけ整合しているかをもとに、トレード判断の根拠を示してください。
 以下の形式でJSONで回答してください：
+
 {{
   "{ 'ロング' if direction == 'long' else 'ショート' }すべきか": "はい" または "いいえ",
   "理由": "〜〜",
   "利確ライン（TP）": "+x.x%" または "-x.x%",
   "損切ライン（SL）": "-x.x%" または "+x.x%",
-  "利益の出る確率": 数値（0〜100）
+  "利益の出る確率": 0〜100の数値（RSI, MACD, 乖離率, 出来高などの整合性から判断してばらつきを持たせてください）
 }}
 """
     try:
@@ -128,7 +131,6 @@ MACDクロス: {'ゴールデンクロス' if prev['macd'] < prev['signal'] and 
         )
         content = response.choices[0].message.content
 
-        # ✅ JSON 部分だけ抽出
         json_match = re.search(r"\{.*?\}", content, re.DOTALL)
         if not json_match:
             raise ValueError("JSON形式の出力が見つかりませんでした")
@@ -144,10 +146,11 @@ MACDクロス: {'ゴールデンクロス' if prev['macd'] < prev['signal'] and 
 def send_to_telegram(symbol, result, direction):
     emoji = "📈" if direction == "long" else "📉"
     title = "ロング" if direction == "long" else "ショート"
-    text = f"""{emoji} {title}シグナル検出: {symbol}
+    symbol_clean = symbol.replace("-USDT-SWAP", "")
+    text = f"""{emoji} {title}シグナル検出: {symbol_clean}
 - 利益確率: {result.get('利益の出る確率', '?')}%
 - 理由: {result.get('理由', '不明')}
-- TP: {result.get('利確ライン（TP）', '?')} / SL: {result.get('損切ライン（SL）', '?')}
+- 損切: {result.get('損切ライン（SL）', '?')} / 利確: {result.get('利確ライン（TP）', '?')}
 """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
