@@ -8,6 +8,7 @@ import pandas as pd
 from flask import Flask
 from groq import Groq
 from dotenv import load_dotenv
+import re
 
 load_dotenv()
 
@@ -78,7 +79,6 @@ def calculate_indicators(df):
 
     return df
 
-# 🔁 条件緩和版
 def passes_filters(df, direction):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
@@ -126,8 +126,17 @@ MACDクロス: {'ゴールデンクロス' if prev['macd'] < prev['signal'] and 
             model="llama3-70b-8192",
             messages=[{"role": "user", "content": prompt}]
         )
-        result = json.loads(response.choices[0].message.content)
+        content = response.choices[0].message.content
+
+        # ✅ JSON 部分だけ抽出
+        json_match = re.search(r"\{.*?\}", content, re.DOTALL)
+        if not json_match:
+            raise ValueError("JSON形式の出力が見つかりませんでした")
+
+        json_str = json_match.group(0)
+        result = json.loads(json_str)
         return result
+
     except Exception as e:
         send_error_to_telegram(f"Groq API エラー:\n{str(e)}")
         return {}
