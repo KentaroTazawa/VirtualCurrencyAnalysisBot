@@ -1,7 +1,7 @@
 import os
 import json
 import time
-import traceback  # ✅追加
+import traceback
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
@@ -20,7 +20,6 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 
-# ✅ 追加：エラー通知用
 def send_error_to_telegram(error_message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
@@ -79,20 +78,21 @@ def calculate_indicators(df):
 
     return df
 
+# 🔁 条件緩和版
 def passes_filters(df, direction):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
     if direction == "short":
-        rsi_cond = latest["rsi"] >= 60
+        rsi_cond = latest["rsi"] >= 55
         macd_cross = prev["macd"] > prev["signal"] and latest["macd"] < latest["signal"]
-        disparity_cond = latest["disparity"] > 1.5
-        volume_cond = latest["volume"] > latest["vol_avg5"] * 1.2
+        disparity_cond = latest["disparity"] > 1.0
+        volume_cond = latest["volume"] > latest["vol_avg5"] * 1.1
     elif direction == "long":
-        rsi_cond = latest["rsi"] <= 40
+        rsi_cond = latest["rsi"] <= 45
         macd_cross = prev["macd"] < prev["signal"] and latest["macd"] > latest["signal"]
-        disparity_cond = latest["disparity"] < -1.5
-        volume_cond = latest["volume"] > latest["vol_avg5"] * 1.2
+        disparity_cond = latest["disparity"] < -1.0
+        volume_cond = latest["volume"] > latest["vol_avg5"] * 1.1
     else:
         return False
 
