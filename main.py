@@ -9,6 +9,7 @@ from flask import Flask
 from groq import Groq
 from dotenv import load_dotenv
 import re
+import random
 
 load_dotenv()
 
@@ -33,31 +34,34 @@ def send_error_to_telegram(error_message):
     except:
         pass
 
-def fetch_ohlcv(symbol):
+def fetch_ohlcv(symbol, retries=3, delay=1):
     url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
-    try:
-        res = requests.get(url)
-        res.raise_for_status()
-        data = res.json().get("data")
-        if not data or len(data) < 30:
-            return None
-    except Exception as e:
-        send_error_to_telegram(f"fetch_ohlcv() でエラー:\n{str(e)}")
-        return None
-
-    df = pd.DataFrame(data)
-    df.columns = ["col_" + str(i) for i in range(len(df.columns))]
-    df = df.rename(columns={
-        "col_0": "timestamp",
-        "col_1": "open",
-        "col_2": "high",
-        "col_3": "low",
-        "col_4": "close",
-        "col_5": "volume"
-    })
-    df = df.iloc[::-1].copy()
-    df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-    return df
+    for attempt in range(retries):
+        try:
+            res = requests.get(url, timeout=1)
+            res.raise_for_status()
+            data = res.json().get("data")
+            if not data or len(data) < 30:
+                return None
+            df = pd.DataFrame(data)
+            df.columns = ["col_" + str(i) for i in range(len(df.columns))]
+            df = df.rename(columns={
+                "col_0": "timestamp",
+                "col_1": "open",
+                "col_2": "high",
+                "col_3": "low",
+                "col_4": "close",
+                "col_5": "volume"
+            })
+            df = df.iloc[::-1].copy()
+            df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
+            return df
+        except Exception as e:
+            if attempt == retries - 1:
+                send_error_to_telegram(f"fetch_ohlcv() 最終リトライ失敗:\n{str(e)}")
+            else:
+                time.sleep(delay + random.random())
+    return None
 
 def calculate_indicators(df):
     df["ema12"] = df["close"].ewm(span=12).mean()
@@ -98,7 +102,7 @@ def passes_filters(df, direction):
 
     return rsi_cond and macd_cross and disparity_cond and volume_cond
 
-def analyze_with_groq(df, direction, retries=3):
+def analyze_with_groq(df, direction):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
@@ -113,34 +117,35 @@ def analyze_with_groq(df, direction, retries=3):
 - 移動平均乖離率: {latest['disparity']:.2f}%
 - 出来高急増: {'はい' if latest['volume'] > latest['vol_avg5'] * 1.2 else 'いいえ'}
 
-上記の指標がどれだけ整合しているかをもとに、トレード判断の根拠を示してください。
-以下の形式でPythonの辞書形式で回答してください（すべてシングルクオート `'` を使って）：
+以下の形式でJSONで回答してください：
+- 利益の出る確率は、整合性によってバラつかせてください。
 
 {{
-  'ロングすべきか' または 'ショートすべきか': 'はい' または 'いいえ',
-  '理由': '〜〜',
-  '利確ライン（TP）': '+x.x%' または '-x.x%',
-  '損切ライン（SL）': '-x.x%' または '+x.x%',
-  '利益の出る確率': 0〜100の整数（RSI, MACD, 乖離率, 出来高などの整合性から判断してばらつきを持たせてください）
+  "{ 'ロング' if direction == 'long' else 'ショート' }すべきか": "はい" または "いいえ",
+  "理由": "〜〜",
+  "利確ライン（TP）": "+x.x%" または "-x.x%",
+  "損切ライン（SL）": "-x.x%" または "+x.x%",
+  "利益の出る確率": 0〜100の数値
 }}
 """
-    for attempt in range(retries):
-        try:
-            response = client.chat.completions.create(
-                model="llama3-70b-8192",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            content = response.choices[0].message.content
-            json_match = re.search(r"\{.*?\}", content, re.DOTALL)
-            if not json_match:
-                raise ValueError("辞書形式の出力が見つかりませんでした")
-            json_str = json_match.group(0).replace("'", '"')
-            return json.loads(json_str)
-        except Exception as e:
-            if attempt == retries - 1:
-                send_error_to_telegram(f"Groq API エラー:\n{str(e)}")
-                return {}
-            time.sleep(3)
+    try:
+        response = client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        content = response.choices[0].message.content
+
+        json_match = re.search(r"\{.*?\}", content, re.DOTALL)
+        if not json_match:
+            raise ValueError("JSON形式の出力が見つかりませんでした")
+
+        json_str = json_match.group(0)
+        result = json.loads(json_str)
+        return result
+
+    except Exception as e:
+        send_error_to_telegram(f"Groq API エラー:\n{str(e)}")
+        return {}
 
 def send_to_telegram(symbol, result, direction):
     emoji = "📈" if direction == "long" else "📉"
