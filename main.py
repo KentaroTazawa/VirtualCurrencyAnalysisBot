@@ -98,7 +98,7 @@ def passes_filters(df, direction):
 
     return rsi_cond and macd_cross and disparity_cond and volume_cond
 
-def analyze_with_groq(df, direction):
+def analyze_with_groq(df, direction, retries=3):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
@@ -114,34 +114,33 @@ def analyze_with_groq(df, direction):
 - 出来高急増: {'はい' if latest['volume'] > latest['vol_avg5'] * 1.2 else 'いいえ'}
 
 上記の指標がどれだけ整合しているかをもとに、トレード判断の根拠を示してください。
-以下の形式でJSONで回答してください：
+以下の形式でPythonの辞書形式で回答してください（すべてシングルクオート `'` を使って）：
 
 {{
-  "{ 'ロング' if direction == 'long' else 'ショート' }すべきか": "はい" または "いいえ",
-  "理由": "〜〜",
-  "利確ライン（TP）": "+x.x%" または "-x.x%",
-  "損切ライン（SL）": "-x.x%" または "+x.x%",
-  "利益の出る確率": 0〜100の数値（RSI, MACD, 乖離率, 出来高などの整合性から判断してばらつきを持たせてください）
+  'ロングすべきか' または 'ショートすべきか': 'はい' または 'いいえ',
+  '理由': '〜〜',
+  '利確ライン（TP）': '+x.x%' または '-x.x%',
+  '損切ライン（SL）': '-x.x%' または '+x.x%',
+  '利益の出る確率': 0〜100の整数（RSI, MACD, 乖離率, 出来高などの整合性から判断してばらつきを持たせてください）
 }}
 """
-    try:
-        response = client.chat.completions.create(
-            model="llama3-70b-8192",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        content = response.choices[0].message.content
-
-        json_match = re.search(r"\{.*?\}", content, re.DOTALL)
-        if not json_match:
-            raise ValueError("JSON形式の出力が見つかりませんでした")
-
-        json_str = json_match.group(0)
-        result = json.loads(json_str)
-        return result
-
-    except Exception as e:
-        send_error_to_telegram(f"Groq API エラー:\n{str(e)}")
-        return {}
+    for attempt in range(retries):
+        try:
+            response = client.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            content = response.choices[0].message.content
+            json_match = re.search(r"\{.*?\}", content, re.DOTALL)
+            if not json_match:
+                raise ValueError("辞書形式の出力が見つかりませんでした")
+            json_str = json_match.group(0).replace("'", '"')
+            return json.loads(json_str)
+        except Exception as e:
+            if attempt == retries - 1:
+                send_error_to_telegram(f"Groq API エラー:\n{str(e)}")
+                return {}
+            time.sleep(3)
 
 def send_to_telegram(symbol, result, direction):
     emoji = "📈" if direction == "long" else "📉"
