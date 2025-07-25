@@ -92,11 +92,6 @@ def passes_filters(df, direction):
         macd_cross = prev["macd"] > prev["signal"] and latest["macd"] < latest["signal"]
         disparity_cond = latest["disparity"] > 1.0
         volume_cond = latest["volume"] > latest["vol_avg5"] * 1.1
-    elif direction == "long":
-        rsi_cond = latest["rsi"] <= 45
-        macd_cross = prev["macd"] < prev["signal"] and latest["macd"] > latest["signal"]
-        disparity_cond = latest["disparity"] < -1.0
-        volume_cond = latest["volume"] > latest["vol_avg5"] * 1.1
     else:
         return False
 
@@ -108,12 +103,12 @@ def analyze_with_groq(df, direction):
 
     prompt = f"""
 以下はある仮想通貨ペアの直近15分足のテクニカル指標です。
-この情報に基づいて、{ 'ロング' if direction == 'long' else 'ショート' }エントリーすべきかを分析してください。
+この情報に基づいて、ショートエントリーすべきかを分析してください。
 
 指標の詳細：
 - RSI: {latest['rsi']:.2f}
 - MACD: {latest['macd']:.6f}, Signal: {latest['signal']:.6f}
-- MACDクロス: {'ゴールデンクロス' if prev['macd'] < prev['signal'] and latest['macd'] > latest['signal'] else ('デッドクロス' if prev['macd'] > prev['signal'] and latest['macd'] < latest['signal'] else 'なし')}
+- MACDクロス: {'デッドクロス' if prev['macd'] > prev['signal'] and latest['macd'] < latest['signal'] else 'なし'}
 - 移動平均乖離率: {latest['disparity']:.2f}%
 - 出来高急増: {'はい' if latest['volume'] > latest['vol_avg5'] * 1.2 else 'いいえ'}
 
@@ -121,10 +116,10 @@ def analyze_with_groq(df, direction):
 - 利益の出る確率は、整合性によってバラつかせてください。
 
 {{
-  "{ 'ロング' if direction == 'long' else 'ショート' }すべきか": "はい" または "いいえ",
+  "ショートすべきか": "はい" または "いいえ",
   "理由": "〜〜",
-  "利確ライン（TP）": "+x.x%" または "-x.x%",
-  "損切ライン（SL）": "-x.x%" または "+x.x%",
+  "利確ライン（TP）": "+x.x%",
+  "損切ライン（SL）": "-x.x%",
   "利益の出る確率": 0〜100の数値
 }}
 """
@@ -145,11 +140,18 @@ def analyze_with_groq(df, direction):
 
     except Exception as e:
         send_error_to_telegram(f"Groq API エラー:\n{str(e)}")
-        return {}
+        # エラー時は「Groq失敗」で通知するための固定レスポンス
+        return {
+            "ショートすべきか": "はい",
+            "理由": "Groq失敗",
+            "利確ライン（TP）": "Groq失敗",
+            "損切ライン（SL）": "Groq失敗",
+            "利益の出る確率": 0
+        }
 
 def send_to_telegram(symbol, result, direction):
-    emoji = "📈" if direction == "long" else "📉"
-    title = "ロング" if direction == "long" else "ショート"
+    emoji = "📉"
+    title = "ショート"
     symbol_clean = symbol.replace("-USDT-SWAP", "")
     text = f"""{emoji} {title}シグナル検出: {symbol_clean}
 - 利益確率: {result.get('利益の出る確率', '?')}%
@@ -196,14 +198,12 @@ def run_analysis():
             volume_cond = latest["volume"] > latest["vol_avg5"] * 1.2
             print(f"[FILTER] {symbol_base},rsi={latest['rsi']:.2f}, MACDX={macd_cross}, 乖離={latest['disparity']:.2f}%, VOL急増={volume_cond}")
 
-            for direction in ["short", "long"]:
+            for direction in ["short"]:
                 if not passes_filters(df, direction):
                     continue
 
                 result = analyze_with_groq(df, direction)
-                key = f"{'ショート' if direction == 'short' else 'ロング'}すべきか"
-
-                if result.get(key) == "はい" and result.get("利益の出る確率", 0) >= 60:
+                if result.get("ショートすべきか") == "はい":
                     send_to_telegram(symbol, result, direction)
                     notified_in_memory[symbol] = now
 
