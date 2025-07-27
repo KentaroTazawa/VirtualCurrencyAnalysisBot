@@ -44,8 +44,8 @@ def fetch_okx_tickers():
 def get_top10_rising_symbols():
     tickers = fetch_okx_tickers()
     sorted_tickers = sorted(
-        [t for t in tickers if t["instId"].endswith("USDT-SWAP")],
-        key=lambda x: float(x["change24h"]),
+        [t for t in tickers if t["instId"].endswith("USDT-SWAP") and t.get("open24h") and t.get("last")],
+        key=lambda x: ((float(x["last"]) - float(x["open24h"])) / float(x["open24h"])) * 100,
         reverse=True
     )
     return [t["instId"] for t in sorted_tickers[:10]]
