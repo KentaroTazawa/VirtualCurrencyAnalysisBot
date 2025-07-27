@@ -149,8 +149,12 @@ def send_to_telegram(symbol, result):
 def run_analysis():
     now = datetime.utcnow()
     top_symbols = get_top10_rising_symbols()
+    checked = 0
 
     for symbol in top_symbols:
+        if checked >= 5:  # 429エラー対策：最大5件まで
+            break
+
         try:
             last_notified = notified_in_memory.get(symbol)
             if last_notified and now - last_notified < timedelta(minutes=60):
@@ -183,7 +187,8 @@ def run_analysis():
             send_error_to_telegram(f"{symbol} 処理中の例外:\n{error_detail}")
 
         finally:
-            time.sleep(7.5)  # CoinGeckoレート制限対応（最大8回/分）
+            time.sleep(7.5)
+            checked += 1
 
 @app.route("/")
 def index():
