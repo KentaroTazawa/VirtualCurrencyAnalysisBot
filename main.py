@@ -67,14 +67,24 @@ def get_coingecko_id(symbol_base):
 
 def fetch_ohlcv_coingecko(coin_id):
     url = f"{COINGECKO_BASE_URL}/coins/{coin_id}/ohlc?vs_currency=usd&days=max"
-    res = requests.get(url, timeout=10)
-    res.raise_for_status()
-    data = res.json()
-    if not data:
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code in [401, 403, 404]:
+            print(f"[SKIP] CoinGecko非対応 (code {res.status_code}): {coin_id}")
+            return None
+        res.raise_for_status()
+        data = res.json()
+        if not data:
+            return None
+        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except requests.exceptions.HTTPError as e:
+        send_error_to_telegram(f"CoinGecko HTTPエラー（{coin_id}）:\n{str(e)}")
         return None
-    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    return df
+    except Exception as e:
+        send_error_to_telegram(f"CoinGecko取得失敗（{coin_id}）:\n{str(e)}")
+        return None
 
 def analyze_with_groq(df, symbol_base):
     latest = df.iloc[-1]
@@ -173,7 +183,7 @@ def run_analysis():
             send_error_to_telegram(f"{symbol} 処理中の例外:\n{error_detail}")
 
         finally:
-            time.sleep(6)  # CoinGecko APIのレート制限を回避（10リクエスト/分）
+            time.sleep(7.5)  # CoinGeckoレート制限対応（最大8回/分）
 
 @app.route("/")
 def index():
