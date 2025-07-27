@@ -172,6 +172,9 @@ def run_analysis():
             error_detail = traceback.format_exc()
             send_error_to_telegram(f"{symbol} 処理中の例外:\n{error_detail}")
 
+        finally:
+            time.sleep(6)  # CoinGecko APIのレート制限を回避（10リクエスト/分）
+
 @app.route("/")
 def index():
     return "OK"
