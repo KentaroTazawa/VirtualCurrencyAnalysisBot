@@ -22,6 +22,7 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 symbol_to_id_cache = {}
+symbol_to_id_cache_time = None
 
 def send_error_to_telegram(error_message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -51,14 +52,18 @@ def get_top10_rising_symbols():
     return [t["instId"] for t in sorted_tickers[:10]]
 
 def fetch_coingecko_symbol_map():
-    global symbol_to_id_cache
-    if symbol_to_id_cache:
+    global symbol_to_id_cache, symbol_to_id_cache_time
+    now = datetime.utcnow()
+
+    if symbol_to_id_cache and symbol_to_id_cache_time and (now - symbol_to_id_cache_time < timedelta(minutes=60)):
         return symbol_to_id_cache
+
     url = f"{COINGECKO_BASE_URL}/coins/list"
     res = requests.get(url, timeout=5)
     res.raise_for_status()
     data = res.json()
     symbol_to_id_cache = {item["symbol"].lower(): item["id"] for item in data}
+    symbol_to_id_cache_time = now
     return symbol_to_id_cache
 
 def get_coingecko_id(symbol_base):
@@ -160,7 +165,7 @@ def run_analysis():
     checked = 0
 
     for symbol in top_symbols:
-        if checked >= 5:  # 最大5件まで（API負荷制限対策）
+        if checked >= 5:
             break
 
         try:
@@ -195,7 +200,7 @@ def run_analysis():
             send_error_to_telegram(f"{symbol} 処理中の例外:\n{error_detail}")
 
         finally:
-            time.sleep(7.5)  # 各通貨処理の間に待機
+            time.sleep(7.5)
             checked += 1
 
 @app.route("/")
