@@ -54,12 +54,28 @@ def fetch_coingecko_symbol_map():
     global symbol_to_id_cache
     if symbol_to_id_cache:
         return symbol_to_id_cache
+
+    cache_file = "coingecko_symbol_cache.json"
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                symbol_to_id_cache = json.load(f)
+                return symbol_to_id_cache
+        except:
+            pass  # ファイル読み込み失敗時はAPIから再取得
+
     url = f"{COINGECKO_BASE_URL}/coins/list"
-    res = requests.get(url, timeout=5)
-    res.raise_for_status()
-    data = res.json()
-    symbol_to_id_cache = {item["symbol"].lower(): item["id"] for item in data}
-    return symbol_to_id_cache
+    try:
+        res = requests.get(url, timeout=5)
+        res.raise_for_status()
+        data = res.json()
+        symbol_to_id_cache = {item["symbol"].lower(): item["id"] for item in data}
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(symbol_to_id_cache, f, ensure_ascii=False, indent=2)
+        return symbol_to_id_cache
+    except Exception as e:
+        send_error_to_telegram(f"CoinGeckoシンボルマップ取得エラー:\n{str(e)}")
+        return {}
 
 def get_coingecko_id(symbol_base):
     symbol_map = fetch_coingecko_symbol_map()
