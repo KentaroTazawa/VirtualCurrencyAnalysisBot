@@ -55,7 +55,7 @@ def fetch_coingecko_symbol_map():
     global symbol_to_id_cache, symbol_to_id_cache_time
     now = datetime.utcnow()
 
-    if symbol_to_id_cache and symbol_to_id_cache_time and (now - symbol_to_id_cache_time < timedelta(minutes=60)):
+    if symbol_to_id_cache and symbol_to_id_cache_time and (now - symbol_to_id_cache_time < timedelta(hours=1)):
         return symbol_to_id_cache
 
     url = f"{COINGECKO_BASE_URL}/coins/list"
