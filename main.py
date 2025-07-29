@@ -54,53 +54,45 @@ def fetch_coingecko_symbol_map():
     global symbol_to_id_cache
     if symbol_to_id_cache:
         return symbol_to_id_cache
-
-    cache_file = "coingecko_symbol_cache.json"
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, "r", encoding="utf-8") as f:
-                symbol_to_id_cache = json.load(f)
-                return symbol_to_id_cache
-        except:
-            pass  # ファイル読み込み失敗時はAPIから再取得
-
     url = f"{COINGECKO_BASE_URL}/coins/list"
-    try:
-        res = requests.get(url, timeout=5)
-        res.raise_for_status()
-        data = res.json()
-        symbol_to_id_cache = {item["symbol"].lower(): item["id"] for item in data}
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(symbol_to_id_cache, f, ensure_ascii=False, indent=2)
-        return symbol_to_id_cache
-    except Exception as e:
-        send_error_to_telegram(f"CoinGeckoシンボルマップ取得エラー:\n{str(e)}")
-        return {}
+    res = requests.get(url, timeout=5)
+    res.raise_for_status()
+    data = res.json()
+    symbol_to_id_cache = {item["symbol"].lower(): item["id"] for item in data}
+    return symbol_to_id_cache
 
 def get_coingecko_id(symbol_base):
     symbol_map = fetch_coingecko_symbol_map()
     return symbol_map.get(symbol_base.lower())
 
-def fetch_ohlcv_coingecko(coin_id):
+def fetch_ohlcv_coingecko(coin_id, max_retries=5, backoff_factor=2):
     url = f"{COINGECKO_BASE_URL}/coins/{coin_id}/ohlc?vs_currency=usd&days=max"
-    try:
-        res = requests.get(url, timeout=10)
-        if res.status_code in [401, 403, 404]:
-            print(f"[SKIP] CoinGecko非対応 (code {res.status_code}): {coin_id}")
+    for attempt in range(max_retries):
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code in [401, 403, 404]:
+                print(f"[SKIP] CoinGecko非対応 (code {res.status_code}): {coin_id}")
+                return None
+            if res.status_code == 429:
+                wait = backoff_factor ** attempt
+                print(f"[RETRY] 429 Too Many Requests: {coin_id}, {wait}s 待機中...")
+                time.sleep(wait)
+                continue
+            res.raise_for_status()
+            data = res.json()
+            if not data:
+                return None
+            df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            return df
+        except requests.exceptions.HTTPError as e:
+            send_error_to_telegram(f"CoinGecko HTTPエラー（{coin_id}）:\n{str(e)}")
             return None
-        res.raise_for_status()
-        data = res.json()
-        if not data:
+        except Exception as e:
+            send_error_to_telegram(f"CoinGecko取得失敗（{coin_id}）:\n{str(e)}")
             return None
-        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        return df
-    except requests.exceptions.HTTPError as e:
-        send_error_to_telegram(f"CoinGecko HTTPエラー（{coin_id}）:\n{str(e)}")
-        return None
-    except Exception as e:
-        send_error_to_telegram(f"CoinGecko取得失敗（{coin_id}）:\n{str(e)}")
-        return None
+    send_error_to_telegram(f"CoinGecko 429連続失敗（{coin_id}）")
+    return None
 
 def analyze_with_groq(df, symbol_base):
     latest = df.iloc[-1]
@@ -168,7 +160,7 @@ def run_analysis():
     checked = 0
 
     for symbol in top_symbols:
-        if checked >= 5:  # 429エラー対策：最大5件まで
+        if checked >= 5:  # 最大5件まで（API負荷制限対策）
             break
 
         try:
@@ -203,7 +195,7 @@ def run_analysis():
             send_error_to_telegram(f"{symbol} 処理中の例外:\n{error_detail}")
 
         finally:
-            time.sleep(7.5)
+            time.sleep(7.5)  # 各通貨処理の間に待機
             checked += 1
 
 @app.route("/")
