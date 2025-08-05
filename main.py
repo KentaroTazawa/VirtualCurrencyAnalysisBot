@@ -24,7 +24,6 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 
-# 共通で使う CoinGecko headers
 def coingecko_headers():
     return {
         "X-Cg-Pro-Api-Key": COINGECKO_API_KEY
@@ -46,9 +45,18 @@ def get_top10_symbols_by_24h_change():
     try:
         url = f"{OKX_BASE_URL}/api/v5/market/tickers?instType=SWAP"
         res = requests.get(url)
-        tickers = res.json()["data"]
-        filtered = [t for t in tickers if t["instId"].endswith("-USDT-SWAP")]
-        sorted_tickers = sorted(filtered, key=lambda x: float(x["change24h"]), reverse=True)
+        tickers = res.json().get("data", [])
+        filtered = [t for t in tickers if t["instId"].endswith("-USDT-SWAP") and t.get("last") and t.get("open24h")]
+
+        def chg(t):
+            try:
+                if "change24h" in t:
+                    return float(t["change24h"])
+                return (float(t["last"]) - float(t["open24h"])) / float(t["open24h"]) * 100
+            except:
+                return -9999  # 計算不能な場合は無視されるように
+
+        sorted_tickers = sorted(filtered, key=chg, reverse=True)
         return [t["instId"] for t in sorted_tickers[:10]]
     except Exception as e:
         send_error_to_telegram(f"急上昇銘柄取得エラー:\n{str(e)}")
