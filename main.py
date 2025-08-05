@@ -192,7 +192,7 @@ def run_analysis():
 
             print(f"🕒 ATH確認中: {coin_id}")
             is_ath = is_ath_today(coin_id)
-            time.sleep(3)
+            time.sleep(10)
 
             if not is_ath:
                 print(f"📉 ATH未達: {symbol}")
