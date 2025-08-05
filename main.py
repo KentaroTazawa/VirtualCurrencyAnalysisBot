@@ -9,13 +9,13 @@ from flask import Flask
 from groq import Groq
 from dotenv import load_dotenv
 import re
-import random
 
 load_dotenv()
 
 OKX_BASE_URL = "https://www.okx.com"
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -24,38 +24,11 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 
-# CoinGeckoのキャッシュ
-coingecko_cache = {
-    "data": None,
-    "timestamp": None
-}
-
-def fetch_coingecko_symbol_map():
-    now = datetime.utcnow()
-    if coingecko_cache["data"] and coingecko_cache["timestamp"] and (now - coingecko_cache["timestamp"] < timedelta(minutes=60)):
-        return coingecko_cache["data"]
-
-    headers = {
-        "accept": "application/json"
-    }
-    if COINGECKO_API_KEY:
-        headers["x-cg-pro-api-key"] = COINGECKO_API_KEY
-
-    url = f"{COINGECKO_BASE_URL}/coins/list"
-    res = requests.get(url, headers=headers, timeout=10)
-    res.raise_for_status()
-    data = res.json()
-    coingecko_cache["data"] = data
-    coingecko_cache["timestamp"] = now
-    return data
-
-def get_coingecko_id(symbol):
-    symbol = symbol.lower()
-    symbol_map = fetch_coingecko_symbol_map()
-    for coin in symbol_map:
-        if coin.get("symbol", "").lower() == symbol:
-            return coin.get("id")
-    return None
+# 共通で使う CoinGecko headers
+def coingecko_headers():
+    return {
+        "X-Cg-Pro-Api-Key": COINGECKO_API_KEY
+    } if COINGECKO_API_KEY else {}
 
 def send_error_to_telegram(error_message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -69,133 +42,120 @@ def send_error_to_telegram(error_message):
     except:
         pass
 
-def fetch_ohlcv(symbol, retries=3, delay=1):
-    url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
-    for attempt in range(retries):
-        try:
-            res = requests.get(url, timeout=1)
-            res.raise_for_status()
-            data = res.json().get("data")
-            if not data or len(data) < 30:
-                return None
-            df = pd.DataFrame(data)
-            df.columns = ["col_" + str(i) for i in range(len(df.columns))]
-            df = df.rename(columns={
-                "col_0": "timestamp",
-                "col_1": "open",
-                "col_2": "high",
-                "col_3": "low",
-                "col_4": "close",
-                "col_5": "volume"
-            })
-            df = df.iloc[::-1].copy()
-            df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-            return df
-        except Exception as e:
-            if attempt == retries - 1:
-                send_error_to_telegram(f"fetch_ohlcv() 最終リトライ失敗:\n{str(e)}")
-            else:
-                time.sleep(delay + random.random())
+def get_top10_symbols_by_24h_change():
+    try:
+        url = f"{OKX_BASE_URL}/api/v5/market/tickers?instType=SWAP"
+        res = requests.get(url)
+        tickers = res.json()["data"]
+        filtered = [t for t in tickers if t["instId"].endswith("-USDT-SWAP")]
+        sorted_tickers = sorted(filtered, key=lambda x: float(x["change24h"]), reverse=True)
+        return [t["instId"] for t in sorted_tickers[:10]]
+    except Exception as e:
+        send_error_to_telegram(f"急上昇銘柄取得エラー:\n{str(e)}")
+        return []
+
+def get_coingecko_coin_list():
+    try:
+        res = requests.get(f"{COINGECKO_BASE_URL}/coins/list", headers=coingecko_headers())
+        return res.json()
+    except Exception as e:
+        send_error_to_telegram(f"CoinGecko銘柄一覧取得エラー:\n{str(e)}")
+        return []
+
+def get_coin_id_from_symbol(symbol, coin_list):
+    symbol_clean = symbol.replace("-USDT-SWAP", "").lower()
+    for coin in coin_list:
+        if coin["symbol"].lower() == symbol_clean:
+            return coin["id"]
     return None
 
-def calculate_indicators(df):
-    df["ema12"] = df["close"].ewm(span=12).mean()
-    df["ema26"] = df["close"].ewm(span=26).mean()
-    df["macd"] = df["ema12"] - df["ema26"]
-    df["signal"] = df["macd"].ewm(span=9).mean()
-
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    rs = avg_gain / avg_loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    df["ma25"] = df["close"].rolling(window=25).mean()
-    df["disparity"] = (df["close"] - df["ma25"]) / df["ma25"] * 100
-    df["vol_avg5"] = df["volume"].rolling(window=5).mean()
-
-    return df
-
-def passes_filters(df, direction):
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    if direction == "short":
-        rsi_cond = latest["rsi"] >= 55
-        macd_cross = prev["macd"] > prev["signal"] and latest["macd"] < latest["signal"]
-        disparity_cond = latest["disparity"] > 1.0
-        volume_cond = latest["volume"] > latest["vol_avg5"] * 1.1
-    else:
+def is_ath_today(coin_id):
+    try:
+        url = f"{COINGECKO_BASE_URL}/coins/{coin_id}/market_chart?vs_currency=usd&days=30"
+        res = requests.get(url, headers=coingecko_headers())
+        data = res.json()["prices"]
+        prices = [price[1] for price in data]
+        return prices[-1] == max(prices)
+    except Exception as e:
+        send_error_to_telegram(f"{coin_id} のATH判定エラー:\n{str(e)}")
         return False
 
-    return rsi_cond and macd_cross and disparity_cond and volume_cond
+def fetch_ohlcv(symbol):
+    url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
+    try:
+        res = requests.get(url)
+        data = res.json()["data"]
+        if not data:
+            return None
+        df = pd.DataFrame(data)
+        df.columns = ["ts", "open", "high", "low", "close", "vol", "_1", "_2"]
+        df = df[["ts", "open", "high", "low", "close", "vol"]]
+        df = df.iloc[::-1].copy()
+        df[["open", "high", "low", "close", "vol"]] = df[["open", "high", "low", "close", "vol"]].astype(float)
+        return df
+    except Exception as e:
+        send_error_to_telegram(f"{symbol} のローソク取得失敗:\n{str(e)}")
+        return None
 
-def analyze_with_groq(df, direction):
+def analyze_with_groq(df, symbol):
     latest = df.iloc[-1]
     prev = df.iloc[-2]
-
     prompt = f"""
-以下はある仮想通貨ペアの直近15分足のテクニカル指標です。
-この情報に基づいて、ショートエントリーすべきかを分析してください。
+以下は {symbol} の15分足テクニカルデータです。価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
 
-指標の詳細：
-- RSI: {latest['rsi']:.2f}
-- MACD: {latest['macd']:.6f}, Signal: {latest['signal']:.6f}
-- MACDクロス: {'デッドクロス' if prev['macd'] > prev['signal'] and latest['macd'] < latest['signal'] else 'なし'}
-- 移動平均乖離率: {latest['disparity']:.2f}%
-- 出来高急増: {'はい' if latest['volume'] > latest['vol_avg5'] * 1.2 else 'いいえ'}
-
-以下の形式でJSONで回答してください：
+**構造化JSONでのみ返答してください（説明不要）**
 
 {{
-  "ショートすべきか": "はい" または "いいえ",
-  "理由": "〜〜",
-  "利確ライン（TP）": "+x.x%",
-  "損切ライン（SL）": "-x.x%",
-  "利益の出る確率": 0〜100の数値
+  "今後下落する可能性は高いか": "はい" または "いいえ",
+  "理由": "～",
+  "予測される下落幅": "-x.x%",
+  "予測される下落タイミング": "例: 数時間以内、24時間以内など"
 }}
+
+参考データ:
+- RSI近似: {latest['close'] / prev['close']:.4f}
+- 直近価格: {latest['close']}
+- 出来高: {latest['vol']}
 """
+
     try:
         response = client.chat.completions.create(
             model="llama3-70b-8192",
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
         )
         content = response.choices[0].message.content
-
-        json_match = re.search(r"\{.*?\}", content, re.DOTALL)
-        if not json_match:
-            raise ValueError("JSON形式の出力が見つかりませんでした")
-
-        json_str = json_match.group(0)
-        result = json.loads(json_str)
-        return result
-
+        json_match = re.search(r"\{[\s\S]*?\}", content)
+        if json_match:
+            return json.loads(json_match.group(0))
+        else:
+            return {
+                "今後下落する可能性は高いか": "不明",
+                "理由": "Groq出力が不完全",
+                "予測される下落幅": "-?",
+                "予測される下落タイミング": "不明"
+            }
     except Exception as e:
-        send_error_to_telegram(f"Groq API エラー:\n{str(e)}")
+        send_error_to_telegram(f"Groqエラー: {str(e)}")
         return {
-            "ショートすべきか": "はい",
-            "理由": "Groq失敗",
-            "利確ライン（TP）": "Groq失敗",
-            "損切ライン（SL）": "Groq失敗",
-            "利益の出る確率": 0
+            "今後下落する可能性は高いか": "不明",
+            "理由": "Groq例外発生",
+            "予測される下落幅": "-?",
+            "予測される下落タイミング": "不明"
         }
 
-def send_to_telegram(symbol, result, direction):
-    emoji = "📉"
-    title = "ショート"
-    symbol_clean = symbol.replace("-USDT-SWAP", "")
-    text = f"""{emoji} {title}シグナル検出: {symbol_clean}
-- 利益確率: {result.get('利益の出る確率', '?')}%
-- 理由: {result.get('理由', '不明')}
-- 損切: {result.get('損切ライン（SL）', '?')} / 利確: {result.get('利確ライン（TP）', '?')}
+def send_to_telegram(symbol, result):
+    text = f"""📉 ATH銘柄警告: {symbol.replace("-USDT-SWAP", "")}
+
+- 今後下落する可能性: {result.get('今後下落する可能性は高いか', '?')}
+- 理由: {result.get('理由', '?')}
+- 下落幅予測: {result.get('予測される下落幅', '?')}
+- 下落タイミング: {result.get('予測される下落タイミング', '?')}
 """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
+        "text": text
     }
     try:
         requests.post(url, data=data)
@@ -203,44 +163,25 @@ def send_to_telegram(symbol, result, direction):
         send_error_to_telegram(f"Telegram送信エラー:\n{str(e)}")
 
 def run_analysis():
-    now = datetime.utcnow()
-
-    try:
-        url = f"{OKX_BASE_URL}/api/v5/public/instruments?instType=SWAP"
-        symbols = [item["instId"] for item in requests.get(url).json()["data"] if item["instId"].endswith("-USDT-SWAP")]
-    except Exception as e:
-        send_error_to_telegram(f"シンボル取得エラー:\n{str(e)}")
-        return
+    symbols = get_top10_symbols_by_24h_change()
+    coin_list = get_coingecko_coin_list()
 
     for symbol in symbols:
         try:
-            last_notified = notified_in_memory.get(symbol)
-            if last_notified and now - last_notified < timedelta(minutes=60):
+            coin_id = get_coin_id_from_symbol(symbol, coin_list)
+            if not coin_id:
+                continue
+            if not is_ath_today(coin_id):
                 continue
 
             df = fetch_ohlcv(symbol)
             if df is None:
                 continue
 
-            df = calculate_indicators(df)
-
-            symbol_base = symbol.replace("-USDT-SWAP", "")
-            coingecko_id = get_coingecko_id(symbol_base)
-            print(f"[INFO] {symbol_base} → CoinGecko ID: {coingecko_id}")
-
-            for direction in ["short"]:
-                if not passes_filters(df, direction):
-                    continue
-
-                result = analyze_with_groq(df, direction)
-                if result.get("ショートすべきか") == "はい":
-                    send_to_telegram(symbol, result, direction)
-                    notified_in_memory[symbol] = now
-
+            result = analyze_with_groq(df, symbol)
+            send_to_telegram(symbol, result)
         except Exception as e:
-            error_detail = traceback.format_exc()
-            send_error_to_telegram(f"{symbol} 処理中の例外:\n{error_detail}")
-            continue
+            send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
 
 @app.route("/")
 def index():
@@ -249,7 +190,7 @@ def index():
 @app.route("/run_analysis")
 def run_analysis_route():
     run_analysis()
-    return "Analysis completed", 200
+    return "分析完了", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
