@@ -1,40 +1,18 @@
-import os
-import json
-import time
-import traceback
-from datetime import datetime, timedelta
-import requests
-import pandas as pd
-from flask import Flask
-from groq import Groq
-from dotenv import load_dotenv
-import re
+import os import json import time import traceback from datetime import datetime, timedelta import requests import pandas as pd from flask import Flask from groq import Groq from dotenv import load_dotenv import re
 
 load_dotenv()
 
-OKX_BASE_URL = "https://www.okx.com"
-COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
+OKX_BASE_URL = "https://www.okx.com" COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3" COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-client = Groq(api_key=GROQ_API_KEY)
-app = Flask(__name__)
-notified_in_memory = {}
+client = Groq(api_key=GROQ_API_KEY) app = Flask(name) notified_in_memory = {}
 
-def coingecko_headers():
-    return {
-        "X-Cg-Pro-Api-Key": COINGECKO_API_KEY
-    } if COINGECKO_API_KEY else {}
+def coingecko_headers(): return {"X-Cg-Pro-Api-Key": COINGECKO_API_KEY} if COINGECKO_API_KEY else {}
 
-def send_error_to_telegram(error_message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": f"⚠️ エラー発生:\n```\n{error_message}\n```",
-        "parse_mode": "Markdown"
+def send_error_to_telegram(error_message): url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage" data = { "chat_id": TELEGRAM_CHAT_ID, "text": f"⚠️ エラー発生:\n``` {error_message}
+
+"parse_mode": "Markdown"
     }
     try:
         requests.post(url, data=data)
@@ -50,11 +28,9 @@ def get_top10_symbols_by_24h_change():
 
         def chg(t):
             try:
-                if "change24h" in t:
-                    return float(t["change24h"])
                 return (float(t["last"]) - float(t["open24h"])) / float(t["open24h"]) * 100
             except:
-                return -9999  # 計算不能な場合は無視されるように
+                return -9999
 
         sorted_tickers = sorted(filtered, key=chg, reverse=True)
         return [t["instId"] for t in sorted_tickers[:10]]
@@ -64,17 +40,29 @@ def get_top10_symbols_by_24h_change():
 
 def get_coingecko_coin_list():
     try:
-        res = requests.get(f"{COINGECKO_BASE_URL}/coins/list", headers=coingecko_headers())
-        return res.json()
+        url = f"{COINGECKO_BASE_URL}/coins/list"
+        print(f"[INFO] CoinGecko銘柄一覧取得中: {url}")
+        res = requests.get(url, headers=coingecko_headers())
+        print(f"[DEBUG] CoinGeckoレスポンスコード: {res.status_code}")
+        coins = res.json()
+        print(f"[DEBUG] CoinGecko銘柄件数: {len(coins)}")
+        if isinstance(coins, list) and isinstance(coins[0], dict):
+            return coins
+        else:
+            raise ValueError("CoinGeckoレスポンス形式が想定外: dictのlistではありません")
     except Exception as e:
         send_error_to_telegram(f"CoinGecko銘柄一覧取得エラー:\n{str(e)}")
         return []
 
 def get_coin_id_from_symbol(symbol, coin_list):
     symbol_clean = symbol.replace("-USDT-SWAP", "").lower()
+    print(f"[INFO] Coin ID検索: {symbol} → {symbol_clean}")
     for coin in coin_list:
-        if coin["symbol"].lower() == symbol_clean:
-            return coin["id"]
+        if isinstance(coin, dict) and "symbol" in coin:
+            if coin["symbol"].lower() == symbol_clean:
+                print(f"[INFO] 見つかったCoin ID: {coin['id']} for symbol: {symbol}")
+                return coin["id"]
+    print(f"[WARN] Coin IDが見つかりませんでした: {symbol}")
     return None
 
 def is_ath_today(coin_id):
@@ -125,7 +113,6 @@ def analyze_with_groq(df, symbol):
 - 直近価格: {latest['close']}
 - 出来高: {latest['vol']}
 """
-
     try:
         response = client.chat.completions.create(
             model="llama3-70b-8192",
@@ -202,3 +189,4 @@ def run_analysis_route():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
