@@ -25,15 +25,15 @@ app = Flask(__name__)
 notified_in_memory = {}
 
 def coingecko_headers():
-    return {
-        "X-Cg-Pro-Api-Key": COINGECKO_API_KEY
-    } if COINGECKO_API_KEY else {}
+    return {"X-Cg-Pro-Api-Key": COINGECKO_API_KEY} if COINGECKO_API_KEY else {}
 
 def send_error_to_telegram(error_message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": f"\u26a0\ufe0f エラー発生:\n```\n{error_message}\n```",
+        "text": f"\u26a0\ufe0f エラー発生:\n```
+{error_message}
+```",
         "parse_mode": "Markdown"
     }
     try:
@@ -51,8 +51,6 @@ def get_top10_symbols_by_24h_change():
 
         def chg(t):
             try:
-                if "change24h" in t:
-                    return float(t["change24h"])
                 return (float(t["last"]) - float(t["open24h"])) / float(t["open24h"]) * 100
             except:
                 return -9999
@@ -60,40 +58,41 @@ def get_top10_symbols_by_24h_change():
         sorted_tickers = sorted(filtered, key=chg, reverse=True)
         top_symbols = [t["instId"] for t in sorted_tickers[:10]]
         print(f"✅ 急上昇TOP10: {top_symbols}")
-        return top_symbols
+        return top_symbols, filtered
     except Exception as e:
         send_error_to_telegram(f"急上昇銘柄取得エラー:\n{str(e)}")
-        return []
+        return [], []
 
-def get_coingecko_coin_list():
+def get_coingecko_markets():
     try:
-        print("🌐 CoinGecko 銘柄一覧取得中...")
-        res = requests.get(f"{COINGECKO_BASE_URL}/coins/list", headers=coingecko_headers())
+        print("🌐 CoinGecko markets取得中...")
+        url = f"{COINGECKO_BASE_URL}/coins/markets"
+        params = {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": 250,
+            "page": 1,
+            "sparkline": False
+        }
+        res = requests.get(url, params=params, headers=coingecko_headers())
         return res.json()
     except Exception as e:
-        send_error_to_telegram(f"CoinGecko銘柄一覧取得エラー:\n{str(e)}")
+        send_error_to_telegram(f"CoinGeckoマーケット取得エラー:\n{str(e)}")
         return []
 
-def get_coin_id_from_symbol(symbol, coin_list):
+def find_coin_id(symbol, markets):
     symbol_clean = symbol.replace("-USDT-SWAP", "").lower()
-    if isinstance(coin_list, list):
-        for coin in coin_list:
-            if isinstance(coin, dict) and coin.get("symbol", "").lower() == symbol_clean:
-                return coin.get("id")
-    return None
+    for coin in markets:
+        if coin.get("symbol", "").lower() == symbol_clean:
+            return coin.get("id"), coin.get("ath"), coin.get("current_price")
+    return None, None, None
 
-def is_ath_today(coin_id):
+def is_ath_today(current_price, ath_price):
     try:
-        url = f"{COINGECKO_BASE_URL}/coins/{coin_id}/market_chart?vs_currency=usd&days=30"
-        res = requests.get(url, headers=coingecko_headers())
-        json_data = res.json()
-        if "prices" not in json_data or not json_data["prices"]:
-            raise ValueError(f"'prices' が見つかりません: {json_data}")
-        data = json_data["prices"]
-        prices = [price[1] for price in data]
-        return prices[-1] == max(prices)
-    except Exception as e:
-        send_error_to_telegram(f"{coin_id} のATH判定エラー:\n{str(e)}")
+        if not current_price or not ath_price:
+            return False
+        return current_price >= ath_price
+    except:
         return False
 
 def fetch_ohlcv(symbol):
@@ -179,22 +178,19 @@ def send_to_telegram(symbol, result):
 
 def run_analysis():
     print("🚀 分析開始")
-    symbols = get_top10_symbols_by_24h_change()
-    coin_list = get_coingecko_coin_list()
+    symbols, okx_data = get_top10_symbols_by_24h_change()
+    markets = get_coingecko_markets()
 
     for symbol in symbols:
         try:
             print(f"\n🔎 処理中: {symbol}")
-            coin_id = get_coin_id_from_symbol(symbol, coin_list)
+            coin_id, ath_price, current_price = find_coin_id(symbol, markets)
             if not coin_id:
                 print(f"❌ CoinGecko ID 未取得: {symbol}")
                 continue
 
             print(f"🕒 ATH確認中: {coin_id}")
-            is_ath = is_ath_today(coin_id)
-            time.sleep(10)
-
-            if not is_ath:
+            if not is_ath_today(current_price, ath_price):
                 print(f"📉 ATH未達: {symbol}")
                 continue
 
@@ -206,6 +202,8 @@ def run_analysis():
             result = analyze_with_groq(df, symbol)
             print(f"📬 通知送信中: {symbol}")
             send_to_telegram(symbol, result)
+
+            time.sleep(10)
 
         except Exception as e:
             send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
