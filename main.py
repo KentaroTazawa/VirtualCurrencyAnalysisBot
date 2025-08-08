@@ -24,26 +24,27 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 
+# --- 新設定 ---
+TOP_SYMBOLS_LIMIT = 5  # 無料プランで安定稼働するなら5〜7が推奨
 COIN_LIST_CACHE = []
+COIN_LIST_LAST_FETCH = None
+COIN_LIST_TTL = timedelta(minutes=30)  # キャッシュ有効期限30分
 
 def coingecko_headers():
     return {"X-Cg-Pro-Api-Key": COINGECKO_API_KEY} if COINGECKO_API_KEY else {}
 
 def send_error_to_telegram(error_message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": f"⚠️ エラー発生:\n\n{error_message}",
-        "parse_mode": "Markdown"
-    }
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"⚠️ エラー発生:\n\n{error_message}", "parse_mode": "Markdown"}
     try:
         requests.post(url, data=data)
     except:
         pass
 
 def get_coingecko_coin_list():
-    global COIN_LIST_CACHE
-    if COIN_LIST_CACHE:
+    global COIN_LIST_CACHE, COIN_LIST_LAST_FETCH
+    # キャッシュが有効なら再利用
+    if COIN_LIST_CACHE and COIN_LIST_LAST_FETCH and datetime.now() - COIN_LIST_LAST_FETCH < COIN_LIST_TTL:
         return COIN_LIST_CACHE
     try:
         url = f"{COINGECKO_BASE_URL}/coins/list"
@@ -52,13 +53,14 @@ def get_coingecko_coin_list():
             send_error_to_telegram(f"CoinGeckoコインリスト取得失敗: HTTP {res.status_code}\n{res.text[:200]}")
             return []
         COIN_LIST_CACHE = res.json()
+        COIN_LIST_LAST_FETCH = datetime.now()
         print(f"🌐 CoinGecko 全コインリスト取得済み: {len(COIN_LIST_CACHE)}件")
         return COIN_LIST_CACHE
     except Exception as e:
         send_error_to_telegram(f"CoinGeckoコインリスト取得エラー:\n{str(e)}")
         return []
 
-def get_top10_symbols_by_24h_change():
+def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
     try:
         print("🔍 OKXからSWAP銘柄を取得中...")
         url = f"{OKX_BASE_URL}/api/v5/market/tickers?instType=SWAP"
@@ -68,16 +70,14 @@ def get_top10_symbols_by_24h_change():
             t for t in tickers
             if t["instId"].endswith("-USDT-SWAP") and t.get("last") and t.get("open24h")
         ]
-
         def chg(t):
             try:
                 return (float(t["last"]) - float(t["open24h"])) / float(t["open24h"]) * 100
             except:
                 return -9999
-
         sorted_tickers = sorted(filtered, key=chg, reverse=True)
-        top_symbols = [t["instId"] for t in sorted_tickers[:10]]
-        print(f"✅ 急上昇TOP10: {top_symbols}")
+        top_symbols = [t["instId"] for t in sorted_tickers[:limit]]
+        print(f"✅ 急上昇TOP{limit}: {top_symbols}")
         return top_symbols, filtered
     except Exception as e:
         send_error_to_telegram(f"急上昇銘柄取得エラー:\n{str(e)}")
@@ -87,22 +87,16 @@ def get_coin_market_data(coin_id):
     try:
         url = f"{COINGECKO_BASE_URL}/coins/{coin_id}"
         res = requests.get(url, headers=coingecko_headers())
-
+        # API制限回避のため少し待つ
+        time.sleep(3)
         if res.status_code != 200:
-            send_error_to_telegram(
-                f"CoinGeckoマーケットデータ取得失敗 ({coin_id}): "
-                f"HTTP {res.status_code}\n{res.text[:200]}"
-            )
+            send_error_to_telegram(f"CoinGeckoマーケットデータ取得失敗 ({coin_id}): HTTP {res.status_code}\n{res.text[:200]}")
             return None, None
-
         try:
             data = res.json()
         except Exception as je:
-            send_error_to_telegram(
-                f"CoinGeckoマーケットデータJSON変換失敗 ({coin_id}): {str(je)}\nレスポンス内容:\n{res.text[:200]}"
-            )
+            send_error_to_telegram(f"CoinGeckoマーケットデータJSON変換失敗 ({coin_id}): {str(je)}\nレスポンス内容:\n{res.text[:200]}")
             return None, None
-
         market_data = data.get("market_data", {})
         return market_data.get("ath", {}).get("usd"), market_data.get("current_price", {}).get("usd")
     except Exception as e:
@@ -112,20 +106,12 @@ def get_coin_market_data(coin_id):
 def find_coin_id(symbol):
     symbol_clean = symbol.replace("-USDT-SWAP", "").lower()
     coins = get_coingecko_coin_list()
-
-    # 完全一致
     for coin in coins:
         if coin.get("symbol", "").lower() == symbol_clean:
-            print(f"🔍 完全一致ヒット: symbol='{symbol_clean}' → id='{coin.get('id')}'")
             return coin.get("id")
-
-    # 部分一致(id or name)
     for coin in coins:
         if symbol_clean in coin.get("id", "").lower() or symbol_clean in coin.get("name", "").lower():
-            print(f"🔍 部分一致ヒット: symbol='{symbol_clean}' in id='{coin.get('id')}', name='{coin.get('name')}'")
             return coin.get("id")
-
-    print(f"❌ CoinGecko ID 未検出: {symbol_clean}")
     return None
 
 def is_ath_today(current_price, ath_price):
@@ -140,6 +126,7 @@ def fetch_ohlcv(symbol):
     url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
     try:
         res = requests.get(url)
+        time.sleep(0.8)  # OKX側も連続アクセスを避ける
         data = res.json()["data"]
         if not data:
             return None
@@ -184,20 +171,10 @@ def analyze_with_groq(df, symbol):
         if json_match:
             return json.loads(json_match.group(0))
         else:
-            return {
-                "今後下落する可能性は高いか": "不明",
-                "理由": "Groq出力が不完全",
-                "予測される下落幅": "-?",
-                "予測される下落タイミング": "不明"
-            }
+            return {"今後下落する可能性は高いか": "不明", "理由": "Groq出力が不完全", "予測される下落幅": "-?", "予測される下落タイミング": "不明"}
     except Exception as e:
         send_error_to_telegram(f"Groqエラー: {str(e)}")
-        return {
-            "今後下落する可能性は高いか": "不明",
-            "理由": "Groq例外発生",
-            "予測される下落幅": "-?",
-            "予測される下落タイミング": "不明"
-        }
+        return {"今後下落する可能性は高いか": "不明", "理由": "Groq例外発生", "予測される下落幅": "-?", "予測される下落タイミング": "不明"}
 
 def send_to_telegram(symbol, result):
     text = f"""📉 ATH銘柄警告: {symbol.replace("-USDT-SWAP", "")}
@@ -208,10 +185,7 @@ def send_to_telegram(symbol, result):
 - 下落タイミング: {result.get('予測される下落タイミング', '?')}
 """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text
-    }
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     try:
         requests.post(url, data=data)
     except Exception as e:
@@ -219,33 +193,20 @@ def send_to_telegram(symbol, result):
 
 def run_analysis():
     print("🚀 分析開始")
-    symbols, _ = get_top10_symbols_by_24h_change()
-
+    symbols, _ = get_top_symbols_by_24h_change()
     for symbol in symbols:
         try:
-            print(f"\n🔎 処理中: {symbol}")
             coin_id = find_coin_id(symbol)
             if not coin_id:
-                print(f"❌ CoinGecko ID 未取得: {symbol}")
                 continue
-
-            print(f"🕒 ATH確認中: {coin_id}")
             ath_price, current_price = get_coin_market_data(coin_id)
             if not is_ath_today(current_price, ath_price):
-                print(f"📉 ATH未達: {symbol}")
                 continue
-
             df = fetch_ohlcv(symbol)
             if df is None:
-                print(f"📉 ローソク足取得失敗: {symbol}")
                 continue
-
             result = analyze_with_groq(df, symbol)
-            print(f"📬 通知送信中: {symbol}")
             send_to_telegram(symbol, result)
-
-            time.sleep(10)
-
         except Exception as e:
             send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
 
@@ -259,4 +220,4 @@ def run_analysis_route():
     return "分析完了", 200
 
 if __name__ == "__main__":
-    app.run
+    app.run()
