@@ -28,7 +28,7 @@ notified_in_memory = {}
 TOP_SYMBOLS_LIMIT = 5  # 無料プランで安定稼働するなら5〜7が推奨
 COIN_LIST_CACHE = []
 COIN_LIST_LAST_FETCH = None
-COIN_LIST_TTL = timedelta(minutes=30)  # キャッシュ有効期限30分
+COIN_LIST_TTL = timedelta(minutes=60)  # キャッシュ有効期限30分
 
 def coingecko_headers():
     return {"X-Cg-Pro-Api-Key": COINGECKO_API_KEY} if COINGECKO_API_KEY else {}
@@ -88,7 +88,7 @@ def get_coin_market_data(coin_id):
         url = f"{COINGECKO_BASE_URL}/coins/{coin_id}"
         res = requests.get(url, headers=coingecko_headers())
         # API制限回避のため少し待つ
-        time.sleep(3)
+        time.sleep(10)
         if res.status_code != 200:
             send_error_to_telegram(f"CoinGeckoマーケットデータ取得失敗 ({coin_id}): HTTP {res.status_code}\n{res.text[:200]}")
             return None, None
