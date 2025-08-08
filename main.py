@@ -48,6 +48,9 @@ def get_coingecko_coin_list():
     try:
         url = f"{COINGECKO_BASE_URL}/coins/list"
         res = requests.get(url, headers=coingecko_headers())
+        if res.status_code != 200:
+            send_error_to_telegram(f"CoinGeckoコインリスト取得失敗: HTTP {res.status_code}\n{res.text[:200]}")
+            return []
         COIN_LIST_CACHE = res.json()
         print(f"🌐 CoinGecko 全コインリスト取得済み: {len(COIN_LIST_CACHE)}件")
         return COIN_LIST_CACHE
@@ -84,11 +87,26 @@ def get_coin_market_data(coin_id):
     try:
         url = f"{COINGECKO_BASE_URL}/coins/{coin_id}"
         res = requests.get(url, headers=coingecko_headers())
-        data = res.json()
+
+        if res.status_code != 200:
+            send_error_to_telegram(
+                f"CoinGeckoマーケットデータ取得失敗 ({coin_id}): "
+                f"HTTP {res.status_code}\n{res.text[:200]}"
+            )
+            return None, None
+
+        try:
+            data = res.json()
+        except Exception as je:
+            send_error_to_telegram(
+                f"CoinGeckoマーケットデータJSON変換失敗 ({coin_id}): {str(je)}\nレスポンス内容:\n{res.text[:200]}"
+            )
+            return None, None
+
         market_data = data.get("market_data", {})
         return market_data.get("ath", {}).get("usd"), market_data.get("current_price", {}).get("usd")
     except Exception as e:
-        send_error_to_telegram(f"CoinGeckoマーケットデータ取得エラー ({coin_id}):\n{str(e)}")
+        send_error_to_telegram(f"CoinGeckoマーケットデータ取得例外 ({coin_id}):\n{str(e)}")
         return None, None
 
 def find_coin_id(symbol):
