@@ -24,6 +24,8 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 
+COIN_LIST_CACHE = []
+
 def coingecko_headers():
     return {"X-Cg-Pro-Api-Key": COINGECKO_API_KEY} if COINGECKO_API_KEY else {}
 
@@ -38,6 +40,20 @@ def send_error_to_telegram(error_message):
         requests.post(url, data=data)
     except:
         pass
+
+def get_coingecko_coin_list():
+    global COIN_LIST_CACHE
+    if COIN_LIST_CACHE:
+        return COIN_LIST_CACHE
+    try:
+        url = f"{COINGECKO_BASE_URL}/coins/list"
+        res = requests.get(url, headers=coingecko_headers())
+        COIN_LIST_CACHE = res.json()
+        print(f"🌐 CoinGecko 全コインリスト取得済み: {len(COIN_LIST_CACHE)}件")
+        return COIN_LIST_CACHE
+    except Exception as e:
+        send_error_to_telegram(f"CoinGeckoコインリスト取得エラー:\n{str(e)}")
+        return []
 
 def get_top10_symbols_by_24h_change():
     try:
@@ -64,29 +80,35 @@ def get_top10_symbols_by_24h_change():
         send_error_to_telegram(f"急上昇銘柄取得エラー:\n{str(e)}")
         return [], []
 
-def get_coingecko_markets():
+def get_coin_market_data(coin_id):
     try:
-        print("🌐 CoinGecko markets取得中...")
-        url = f"{COINGECKO_BASE_URL}/coins/markets"
-        params = {
-            "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": 250,
-            "page": 1,
-            "sparkline": False
-        }
-        res = requests.get(url, params=params, headers=coingecko_headers())
-        return res.json()
+        url = f"{COINGECKO_BASE_URL}/coins/{coin_id}"
+        res = requests.get(url, headers=coingecko_headers())
+        data = res.json()
+        market_data = data.get("market_data", {})
+        return market_data.get("ath", {}).get("usd"), market_data.get("current_price", {}).get("usd")
     except Exception as e:
-        send_error_to_telegram(f"CoinGeckoマーケット取得エラー:\n{str(e)}")
-        return []
+        send_error_to_telegram(f"CoinGeckoマーケットデータ取得エラー ({coin_id}):\n{str(e)}")
+        return None, None
 
-def find_coin_id(symbol, markets):
+def find_coin_id(symbol):
     symbol_clean = symbol.replace("-USDT-SWAP", "").lower()
-    for coin in markets:
+    coins = get_coingecko_coin_list()
+
+    # 完全一致
+    for coin in coins:
         if coin.get("symbol", "").lower() == symbol_clean:
-            return coin.get("id"), coin.get("ath"), coin.get("current_price")
-    return None, None, None
+            print(f"🔍 完全一致ヒット: symbol='{symbol_clean}' → id='{coin.get('id')}'")
+            return coin.get("id")
+
+    # 部分一致(id or name)
+    for coin in coins:
+        if symbol_clean in coin.get("id", "").lower() or symbol_clean in coin.get("name", "").lower():
+            print(f"🔍 部分一致ヒット: symbol='{symbol_clean}' in id='{coin.get('id')}', name='{coin.get('name')}'")
+            return coin.get("id")
+
+    print(f"❌ CoinGecko ID 未検出: {symbol_clean}")
+    return None
 
 def is_ath_today(current_price, ath_price):
     try:
@@ -179,18 +201,18 @@ def send_to_telegram(symbol, result):
 
 def run_analysis():
     print("🚀 分析開始")
-    symbols, okx_data = get_top10_symbols_by_24h_change()
-    markets = get_coingecko_markets()
+    symbols, _ = get_top10_symbols_by_24h_change()
 
     for symbol in symbols:
         try:
             print(f"\n🔎 処理中: {symbol}")
-            coin_id, ath_price, current_price = find_coin_id(symbol, markets)
+            coin_id = find_coin_id(symbol)
             if not coin_id:
                 print(f"❌ CoinGecko ID 未取得: {symbol}")
                 continue
 
             print(f"🕒 ATH確認中: {coin_id}")
+            ath_price, current_price = get_coin_market_data(coin_id)
             if not is_ath_today(current_price, ath_price):
                 print(f"📉 ATH未達: {symbol}")
                 continue
@@ -219,4 +241,4 @@ def run_analysis_route():
     return "分析完了", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    app.run
