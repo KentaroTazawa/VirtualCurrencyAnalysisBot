@@ -31,11 +31,8 @@ def send_error_to_telegram(error_message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": f"""\u26a0\ufe0f エラー発生:
-
-{error_message}
-
-"parse_mode": "Markdown"
+        "text": f"⚠️ エラー発生:\n\n{error_message}",
+        "parse_mode": "Markdown"
     }
     try:
         requests.post(url, data=data)
@@ -48,7 +45,10 @@ def get_top10_symbols_by_24h_change():
         url = f"{OKX_BASE_URL}/api/v5/market/tickers?instType=SWAP"
         res = requests.get(url)
         tickers = res.json().get("data", [])
-        filtered = [t for t in tickers if t["instId"].endswith("-USDT-SWAP") and t.get("last") and t.get("open24h")]
+        filtered = [
+            t for t in tickers
+            if t["instId"].endswith("-USDT-SWAP") and t.get("last") and t.get("open24h")
+        ]
 
         def chg(t):
             try:
