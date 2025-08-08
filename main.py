@@ -31,10 +31,11 @@ def send_error_to_telegram(error_message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": f"\u26a0\ufe0f エラー発生:\n```
+        "text": f"""\u26a0\ufe0f エラー発生:
+
 {error_message}
-```",
-        "parse_mode": "Markdown"
+
+"parse_mode": "Markdown"
     }
     try:
         requests.post(url, data=data)
