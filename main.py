@@ -12,14 +12,10 @@ import re
 
 load_dotenv()
 
-# === API設定 ===
 OKX_BASE_URL = "https://www.okx.com"
-CMC_BASE_URL = "https://pro-api.coinmarketcap.com/v1"
 CC_BASE_URL = "https://min-api.cryptocompare.com/data"
 
-CMC_API_KEY = os.getenv("COINMARKETCAP_API_KEY")
 CC_API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY")
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -28,14 +24,7 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 
-# キャッシュ設定
-TOP_SYMBOLS_LIMIT = 30
-CMC_COIN_LIST_CACHE = []
-CMC_COIN_LIST_LAST_FETCH = None
-CMC_COIN_LIST_TTL = timedelta(minutes=5)
-
-def cmc_headers():
-    return {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+TOP_SYMBOLS_LIMIT = 10  # 24h変化率トップ10対象
 
 def send_error_to_telegram(error_message):
     try:
@@ -44,73 +33,6 @@ def send_error_to_telegram(error_message):
     except:
         pass
 
-# === CoinMarketCapコインリスト取得 ===
-def get_cmc_coin_list():
-    global CMC_COIN_LIST_CACHE, CMC_COIN_LIST_LAST_FETCH
-    if CMC_COIN_LIST_CACHE and CMC_COIN_LIST_LAST_FETCH and datetime.now() - CMC_COIN_LIST_LAST_FETCH < CMC_COIN_LIST_TTL:
-        return CMC_COIN_LIST_CACHE
-    try:
-        url = f"{CMC_BASE_URL}/cryptocurrency/map"
-        res = requests.get(url, headers=cmc_headers())
-        if res.status_code != 200:
-            send_error_to_telegram(f"CMCコインリスト取得失敗: HTTP {res.status_code}")
-            return []
-        data = res.json().get("data", [])
-        CMC_COIN_LIST_CACHE = data
-        CMC_COIN_LIST_LAST_FETCH = datetime.now()
-        print(f"🌐 CMC 全コインリスト取得済み: {len(data)}件")
-        return data
-    except Exception as e:
-        send_error_to_telegram(f"CMCコインリスト取得エラー:\n{str(e)}")
-        return []
-
-# === 銘柄シンボルからCoinMarketCapのID取得 ===
-def find_coin_id(symbol):
-    symbol_clean = symbol.replace("-USDT-SWAP", "").upper()
-    coins = get_cmc_coin_list()
-    for coin in coins:
-        if coin.get("symbol") == symbol_clean:
-            return coin.get("id")
-    for coin in coins:
-        if symbol_clean in coin.get("name", "").upper():
-            return coin.get("id")
-    return None
-
-# === ATHと現在価格取得（CryptoCompareヒストリカルで計算） ===
-def get_all_time_high(symbol_clean):
-    """CryptoCompareから全期間ヒストリカルデータを取得し、ATHを計算"""
-    try:
-        # 最大2000時間分のヒストリカル時足データを取得（約83日分）
-        url = f"{CC_BASE_URL}/v2/histohour?fsym={symbol_clean}&tsym=USD&limit=2000&api_key={CC_API_KEY}"
-        res = requests.get(url)
-        data = res.json()
-        prices = [candle["high"] for candle in data.get("Data", {}).get("Data", []) if candle.get("high")]
-        if not prices:
-            return None
-        return max(prices)
-    except Exception as e:
-        send_error_to_telegram(f"{symbol_clean} ATH計算失敗: {str(e)}")
-        return None
-
-def get_market_data(coin_id, symbol):
-    """現在価格と全期間ATHを取得"""
-    try:
-        symbol_clean = symbol.replace("-USDT-SWAP", "").upper()
-        # 現在価格取得
-        price_url = f"{CC_BASE_URL}/pricemultifull?fsyms={symbol_clean}&tsyms=USD&api_key={CC_API_KEY}"
-        res = requests.get(price_url)
-        data = res.json()
-        price = data.get("RAW", {}).get(symbol_clean, {}).get("USD", {}).get("PRICE")
-
-        # 全期間ATH計算
-        ath_price = get_all_time_high(symbol_clean)
-
-        return ath_price, price
-    except Exception as e:
-        send_error_to_telegram(f"マーケットデータ取得失敗 ({symbol}): {str(e)}")
-        return None, None
-
-# === OKXのトップ銘柄取得 ===
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
     try:
         url = f"{OKX_BASE_URL}/api/v5/market/tickers?instType=SWAP"
@@ -123,16 +45,34 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
             except:
                 return -9999
         sorted_tickers = sorted(filtered, key=chg, reverse=True)
-        return [t["instId"] for t in sorted_tickers[:limit]], filtered
+        return [t["instId"] for t in sorted_tickers[:limit]]
     except Exception as e:
         send_error_to_telegram(f"急上昇銘柄取得エラー:\n{str(e)}")
-        return [], []
+        return []
 
-def is_ath_today(current_price, ath_price):
+def get_all_time_high(symbol_clean):
     try:
-        return current_price and ath_price and current_price >= ath_price
-    except:
-        return False
+        url = f"{CC_BASE_URL}/v2/histohour?fsym={symbol_clean}&tsym=USD&limit=2000&api_key={CC_API_KEY}"
+        res = requests.get(url)
+        data = res.json()
+        prices = [candle["high"] for candle in data.get("Data", {}).get("Data", []) if candle.get("high")]
+        if not prices:
+            return None
+        return max(prices)
+    except Exception as e:
+        send_error_to_telegram(f"{symbol_clean} ATH計算失敗: {str(e)}")
+        return None
+
+def get_current_price(symbol_clean):
+    try:
+        url = f"{CC_BASE_URL}/pricemultifull?fsyms={symbol_clean}&tsyms=USD&api_key={CC_API_KEY}"
+        res = requests.get(url)
+        data = res.json()
+        price = data.get("RAW", {}).get(symbol_clean, {}).get("USD", {}).get("PRICE")
+        return price
+    except Exception as e:
+        send_error_to_telegram(f"{symbol_clean} 現在価格取得失敗: {str(e)}")
+        return None
 
 def fetch_ohlcv(symbol):
     try:
@@ -198,18 +138,18 @@ def send_to_telegram(symbol, result):
 
 def run_analysis():
     print("🚀 分析開始")
-    symbols, _ = get_top_symbols_by_24h_change()
+    symbols = get_top_symbols_by_24h_change()
     print(f"🔎 対象銘柄: {symbols}")
     for symbol in symbols:
         try:
             print(f"==============================")
             print(f"🔔 {symbol} の処理開始")
-            coin_id = find_coin_id(symbol)
-            print(f"🎯 {symbol} のCoinMarketCap ID: {coin_id}")
-            ath_price, current_price = get_market_data(coin_id, symbol)
+            symbol_clean = symbol.replace("-USDT-SWAP", "").upper()
+            ath_price = get_all_time_high(symbol_clean)
+            current_price = get_current_price(symbol_clean)
             print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
-            if not is_ath_today(current_price, ath_price):
-                print(f"ℹ️ {symbol} はATHではありません。スキップ")
+            if current_price is None or ath_price is None or current_price < ath_price:
+                print(f"ℹ️ {symbol} はATH未満またはデータ不足のためスキップ")
                 continue
             df = fetch_ohlcv(symbol)
             if df is None:
@@ -233,4 +173,4 @@ def run_analysis_route():
     return "分析完了", 200
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
