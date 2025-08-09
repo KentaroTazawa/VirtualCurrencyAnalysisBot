@@ -128,21 +128,25 @@ def is_ath_today(current_price, ath_price):
 
 def fetch_ohlcv(symbol):
     try:
+        print(f"🕒 {symbol} のローソク足データ取得中...")
         url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
         res = requests.get(url)
         time.sleep(0.8)
         data = res.json().get("data", [])
         if not data:
+            print(f"⚠️ {symbol} のローソク足データがありません")
             return None
         df = pd.DataFrame(data, columns=["ts", "open", "high", "low", "close", "vol", "_1", "_2"])
         df = df[["ts", "open", "high", "low", "close", "vol"]].iloc[::-1].copy()
         df[["open", "high", "low", "close", "vol"]] = df[["open", "high", "low", "close", "vol"]].astype(float)
+        print(f"✅ {symbol} のローソク足データ取得完了")
         return df
     except Exception as e:
         send_error_to_telegram(f"{symbol} のローソク取得失敗:\n{str(e)}")
         return None
 
 def analyze_with_groq(df, symbol):
+    print(f"🔍 {symbol} をGroqで分析中...")
     latest, prev = df.iloc[-1], df.iloc[-2]
     prompt = f"""
 以下は {symbol} の15分足テクニカルデータです。価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
@@ -169,9 +173,12 @@ def analyze_with_groq(df, symbol):
         )
         content = res.choices[0].message.content
         match = re.search(r"\{[\s\S]*?\}", content)
-        return json.loads(match.group(0)) if match else {"今後下落する可能性は高いか": "不明"}
+        result = json.loads(match.group(0)) if match else {"今後下落する可能性は高いか": "不明"}
+        print(f"✅ {symbol} のGroq分析結果: {result}")
+        return result
     except Exception as e:
         send_error_to_telegram(f"Groqエラー: {str(e)}")
+        print(f"⚠️ {symbol} のGroq分析に失敗")
         return {"今後下落する可能性は高いか": "不明"}
 
 def send_to_telegram(symbol, result):
@@ -182,31 +189,47 @@ def send_to_telegram(symbol, result):
 - 下落幅予測: {result.get('予測される下落幅', '?')}
 - 下落タイミング: {result.get('予測される下落タイミング', '?')}
 """
+    print(f"✉️ {symbol} の分析結果をTelegramに送信中...")
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+        print(f"✅ {symbol} の結果をTelegramに送信完了")
     except Exception as e:
         send_error_to_telegram(f"Telegram送信エラー:\n{str(e)}")
+        print(f"⚠️ {symbol} のTelegram送信に失敗")
 
 def run_analysis():
     print("🚀 分析開始")
     symbols, _ = get_top_symbols_by_24h_change()
+    print(f"🔎 対象銘柄: {symbols}")
     for symbol in symbols:
+        print(f"==============================")
+        print(f"🔔 {symbol} の処理開始")
         try:
             coin_id = find_coin_id(symbol)
             if not coin_id:
+                print(f"⚠️ {symbol} のCoinMarketCap IDが見つかりません")
                 continue
+            print(f"🎯 {symbol} のCoinMarketCap ID: {coin_id}")
+
             ath_price, current_price = get_market_data(coin_id, symbol)
+            print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
             if not is_ath_today(current_price, ath_price):
+                print(f"ℹ️ {symbol} はATHではありません。スキップ")
                 continue
+
             df = fetch_ohlcv(symbol)
             if df is None:
+                print(f"⚠️ {symbol} のローソク足データが取得できませんでした。スキップ")
                 continue
+
             result = analyze_with_groq(df, symbol)
             send_to_telegram(symbol, result)
             time.sleep(10)  # API制限回避
         except Exception as e:
             send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
+            print(f"⚠️ {symbol} の処理中に例外発生")
+    print("✅ 分析終了")
 
 @app.route("/")
 def index():
