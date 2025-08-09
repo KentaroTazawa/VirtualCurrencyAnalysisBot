@@ -32,7 +32,7 @@ notified_in_memory = {}
 TOP_SYMBOLS_LIMIT = 30
 CMC_COIN_LIST_CACHE = []
 CMC_COIN_LIST_LAST_FETCH = None
-CMC_COIN_LIST_TTL = timedelta(minutes=0)
+CMC_COIN_LIST_TTL = timedelta(minutes=5)
 
 def cmc_headers():
     return {"X-CMC_PRO_API_KEY": CMC_API_KEY}
