@@ -12,7 +12,7 @@ import re
 
 load_dotenv()
 
-OKX_BASE_URL = "https://www.okx.com"
+MEXC_BASE_URL = "https://contract.mexc.com"
 CC_BASE_URL = "https://min-api.cryptocompare.com/data"
 
 CC_API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY")
@@ -35,19 +35,29 @@ def send_error_to_telegram(error_message):
 
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
     try:
-        url = f"{OKX_BASE_URL}/api/v5/market/tickers?instType=SWAP"
+        url = f"{MEXC_BASE_URL}/api/v1/contract/market/tickers"
         res = requests.get(url)
-        tickers = res.json().get("data", [])
-        filtered = [t for t in tickers if t["instId"].endswith("-USDT-SWAP") and t.get("last") and t.get("open24h")]
-        def chg(t):
+        res.raise_for_status()
+        data = res.json()
+        tickers = data.get("data", [])
+        # 24h変化率計算： (lastPrice - openPrice) / openPrice * 100
+        filtered = []
+        for t in tickers:
             try:
-                return (float(t["last"]) - float(t["open24h"])) / float(t["open24h"]) * 100
+                symbol = t.get("symbol", "")
+                last_price = float(t.get("lastPrice", 0))
+                open_price = float(t.get("openPrice", 0))
+                if open_price == 0:
+                    continue
+                change_pct = (last_price - open_price) / open_price * 100
+                filtered.append({"symbol": symbol, "change_pct": change_pct})
             except:
-                return -9999
-        sorted_tickers = sorted(filtered, key=chg, reverse=True)
-        return [t["instId"] for t in sorted_tickers[:limit]]
+                continue
+        sorted_tickers = sorted(filtered, key=lambda x: x["change_pct"], reverse=True)
+        top_symbols = [t["symbol"] for t in sorted_tickers[:limit]]
+        return top_symbols
     except Exception as e:
-        send_error_to_telegram(f"急上昇銘柄取得エラー:\n{str(e)}")
+        send_error_to_telegram(f"MEXC 急上昇銘柄取得エラー:\n{str(e)}")
         return []
 
 def get_all_time_high(symbol_clean):
@@ -76,7 +86,8 @@ def get_current_price(symbol_clean):
 
 def fetch_ohlcv(symbol):
     try:
-        url = f"{OKX_BASE_URL}/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
+        # MEXC先物のローソク足はMEXC先物APIで取るのが良いが、ここはOKXの例を流用。必要に応じてMEXCのAPIに差し替え推奨
+        url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
         res = requests.get(url)
         time.sleep(0.8)
         data = res.json().get("data", [])
@@ -123,7 +134,7 @@ def analyze_with_groq(df, symbol):
         return {"今後下落する可能性は高いか": "不明"}
 
 def send_to_telegram(symbol, result):
-    text = f"""📉 ATH銘柄警告: {symbol.replace("-USDT-SWAP", "")}
+    text = f"""📉 ATH銘柄警告: {symbol}
 
 - 今後下落する可能性: {result.get('今後下落する可能性は高いか', '?')}
 - 理由: {result.get('理由', '?')}
@@ -144,7 +155,7 @@ def run_analysis():
         try:
             print(f"==============================")
             print(f"🔔 {symbol} の処理開始")
-            symbol_clean = symbol.replace("-USDT-SWAP", "").upper()
+            symbol_clean = symbol.upper()
             ath_price = get_all_time_high(symbol_clean)
             current_price = get_current_price(symbol_clean)
             print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
