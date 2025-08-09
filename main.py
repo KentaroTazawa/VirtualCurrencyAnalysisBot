@@ -29,10 +29,10 @@ app = Flask(__name__)
 notified_in_memory = {}
 
 # キャッシュ設定
-TOP_SYMBOLS_LIMIT = 5
+TOP_SYMBOLS_LIMIT = 50
 CMC_COIN_LIST_CACHE = []
 CMC_COIN_LIST_LAST_FETCH = None
-CMC_COIN_LIST_TTL = timedelta(minutes=60)
+CMC_COIN_LIST_TTL = timedelta(minutes=0)
 
 def cmc_headers():
     return {"X-CMC_PRO_API_KEY": CMC_API_KEY}
