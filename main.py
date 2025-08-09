@@ -13,9 +13,7 @@ import re
 load_dotenv()
 
 MEXC_BASE_URL = "https://contract.mexc.com"
-CC_BASE_URL = "https://min-api.cryptocompare.com/data"
 
-CC_API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -50,58 +48,45 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
                 if open_price == 0:
                     continue
                 change_pct = (last_price - open_price) / open_price * 100
-                filtered.append({"symbol": symbol, "change_pct": change_pct})
+                filtered.append({"symbol": symbol, "last_price": last_price, "change_pct": change_pct})
             except:
                 continue
         sorted_tickers = sorted(filtered, key=lambda x: x["change_pct"], reverse=True)
-        top_symbols = [t["symbol"] for t in sorted_tickers[:limit]]
-        return top_symbols
+        return sorted_tickers[:limit]
     except Exception as e:
         send_error_to_telegram(f"MEXC 急上昇銘柄取得エラー:\n{str(e)}")
         return []
 
-def get_all_time_high(symbol_clean):
+def fetch_ohlcv(symbol, limit=2000):
     try:
-        url = f"{CC_BASE_URL}/v2/histohour?fsym={symbol_clean}&tsym=USD&limit=2000&api_key={CC_API_KEY}"
+        # MEXC先物の15分足ローソク足取得（limitは最大2000）
+        url = f"{MEXC_BASE_URL}/api/v1/contract/candles?symbol={symbol}&interval=15m&limit={limit}"
         res = requests.get(url)
+        res.raise_for_status()
         data = res.json()
-        prices = [candle["high"] for candle in data.get("Data", {}).get("Data", []) if candle.get("high")]
-        if not prices:
+        candles = data.get("data", [])
+        if not candles:
             return None
-        return max(prices)
-    except Exception as e:
-        send_error_to_telegram(f"{symbol_clean} ATH計算失敗: {str(e)}")
-        return None
-
-def get_current_price(symbol_clean):
-    try:
-        url = f"{CC_BASE_URL}/pricemultifull?fsyms={symbol_clean}&tsyms=USD&api_key={CC_API_KEY}"
-        res = requests.get(url)
-        data = res.json()
-        price = data.get("RAW", {}).get(symbol_clean, {}).get("USD", {}).get("PRICE")
-        return price
-    except Exception as e:
-        send_error_to_telegram(f"{symbol_clean} 現在価格取得失敗: {str(e)}")
-        return None
-
-def fetch_ohlcv(symbol):
-    try:
-        # MEXC先物のローソク足はMEXC先物APIで取るのが良いが、ここはOKXの例を流用。必要に応じてMEXCのAPIに差し替え推奨
-        url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar=15m&limit=100"
-        res = requests.get(url)
-        time.sleep(0.8)
-        data = res.json().get("data", [])
-        if not data:
-            return None
-        df = pd.DataFrame(data, columns=["ts", "open", "high", "low", "close", "vol", "_1", "_2"])
-        df = df[["ts", "open", "high", "low", "close", "vol"]].iloc[::-1].copy()
+        # candlesは [timestamp, open, high, low, close, volume] のリストのリスト
+        df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "vol"])
         df[["open", "high", "low", "close", "vol"]] = df[["open", "high", "low", "close", "vol"]].astype(float)
+        df = df.iloc[::-1].copy()  # 昇順に並び替え
         return df
     except Exception as e:
         send_error_to_telegram(f"{symbol} のローソク取得失敗:\n{str(e)}")
         return None
 
+def is_ath_today(current_price, df):
+    try:
+        # 過去のローソク足の高値の最高値をATHとみなす
+        ath_price = df["high"].max()
+        return current_price >= ath_price, ath_price
+    except Exception:
+        return False, None
+
 def analyze_with_groq(df, symbol):
+    if len(df) < 2:
+        return {"今後下落する可能性は高いか": "不明"}
     latest, prev = df.iloc[-1], df.iloc[-2]
     prompt = f"""
 以下は {symbol} の15分足テクニカルデータです。価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
@@ -149,22 +134,23 @@ def send_to_telegram(symbol, result):
 
 def run_analysis():
     print("🚀 分析開始")
-    symbols = get_top_symbols_by_24h_change()
+    top_tickers = get_top_symbols_by_24h_change()
+    symbols = [t["symbol"] for t in top_tickers]
     print(f"🔎 対象銘柄: {symbols}")
-    for symbol in symbols:
+    for ticker in top_tickers:
+        symbol = ticker["symbol"]
+        current_price = ticker["last_price"]
         try:
             print(f"==============================")
             print(f"🔔 {symbol} の処理開始")
-            symbol_clean = symbol.upper()
-            ath_price = get_all_time_high(symbol_clean)
-            current_price = get_current_price(symbol_clean)
-            print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
-            if current_price is None or ath_price is None or current_price < ath_price:
-                print(f"ℹ️ {symbol} はATH未満またはデータ不足のためスキップ")
-                continue
             df = fetch_ohlcv(symbol)
             if df is None:
                 print(f"⚠️ {symbol} のローソク足データ取得失敗。スキップ")
+                continue
+            ath_flag, ath_price = is_ath_today(current_price, df)
+            print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
+            if not ath_flag:
+                print(f"ℹ️ {symbol} はATHではありません。スキップ")
                 continue
             result = analyze_with_groq(df, symbol)
             send_to_telegram(symbol, result)
