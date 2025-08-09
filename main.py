@@ -76,15 +76,35 @@ def find_coin_id(symbol):
             return coin.get("id")
     return None
 
-# === ATHと現在価格取得（CryptoCompareのみ使用） ===
-def get_market_data(coin_id, symbol):
+# === ATHと現在価格取得（CryptoCompareヒストリカルで計算） ===
+def get_all_time_high(symbol_clean):
+    """CryptoCompareから全期間ヒストリカルデータを取得し、ATHを計算"""
     try:
-        symbol_clean = symbol.replace("-USDT-SWAP", "").upper()
-        url = f"{CC_BASE_URL}/pricemultifull?fsyms={symbol_clean}&tsyms=USD&api_key={CC_API_KEY}"
+        # 最大2000日分のヒストリカル日足データを取得（約5年分）
+        url = f"{CC_BASE_URL}/v2/histoday?fsym={symbol_clean}&tsym=USD&limit=2000&api_key={CC_API_KEY}"
         res = requests.get(url)
         data = res.json()
+        prices = [candle["high"] for candle in data.get("Data", {}).get("Data", []) if candle.get("high")]
+        if not prices:
+            return None
+        return max(prices)
+    except Exception as e:
+        send_error_to_telegram(f"{symbol_clean} ATH計算失敗: {str(e)}")
+        return None
+
+def get_market_data(coin_id, symbol):
+    """現在価格と全期間ATHを取得"""
+    try:
+        symbol_clean = symbol.replace("-USDT-SWAP", "").upper()
+        # 現在価格取得
+        price_url = f"{CC_BASE_URL}/pricemultifull?fsyms={symbol_clean}&tsyms=USD&api_key={CC_API_KEY}"
+        res = requests.get(price_url)
+        data = res.json()
         price = data.get("RAW", {}).get(symbol_clean, {}).get("USD", {}).get("PRICE")
-        ath_price = data.get("RAW", {}).get(symbol_clean, {}).get("USD", {}).get("HIGH24HOUR")  # 24時間高値をATH代わりに利用
+
+        # 全期間ATH計算
+        ath_price = get_all_time_high(symbol_clean)
+
         return ath_price, price
     except Exception as e:
         send_error_to_telegram(f"マーケットデータ取得失敗 ({symbol}): {str(e)}")
