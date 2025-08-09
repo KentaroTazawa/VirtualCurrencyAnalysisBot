@@ -80,8 +80,8 @@ def find_coin_id(symbol):
 def get_all_time_high(symbol_clean):
     """CryptoCompareから全期間ヒストリカルデータを取得し、ATHを計算"""
     try:
-        # 最大2000日分のヒストリカル日足データを取得（約5年分）
-        url = f"{CC_BASE_URL}/v2/histoday?fsym={symbol_clean}&tsym=USD&limit=2000&api_key={CC_API_KEY}"
+        # 最大2000時間分のヒストリカル時足データを取得（約83日分）
+        url = f"{CC_BASE_URL}/v2/histohour?fsym={symbol_clean}&tsym=USD&limit=2000&api_key={CC_API_KEY}"
         res = requests.get(url)
         data = res.json()
         prices = [candle["high"] for candle in data.get("Data", {}).get("Data", []) if candle.get("high")]
