@@ -35,7 +35,7 @@ def send_error_to_telegram(error_message):
         pass
 
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
-    """MEXCの急上昇銘柄を取得"""
+    """MEXC の先物ティッカー（24h変化）を取得"""
     try:
         url = f"{MEXC_BASE_URL}/api/v1/contract/ticker"
         res = requests.get(url, timeout=10)
@@ -48,7 +48,7 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
             try:
                 symbol = t.get("symbol", "")
                 last_price = float(t.get("lastPrice", 0))
-                rise_fall_rate = float(t.get("riseFallRate", 0)) * 100
+                rise_fall_rate = float(t.get("riseFallRate", 0)) * 100  # 0.0139 -> 1.39%
                 filtered.append({"symbol": symbol, "last_price": last_price, "change_pct": rise_fall_rate})
             except:
                 continue
@@ -61,47 +61,99 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
         send_error_to_telegram(f"MEXC 急上昇銘柄取得エラー:\n{str(e)}")
         return []
 
-def fetch_ohlcv(symbol, limit=2000):
-    """MEXCからローソク足を取得"""
+def get_available_contract_symbols():
+    """contract/detail から先物の正式 symbol 一覧を取得（フィルター用）"""
     try:
-        url = f"{MEXC_BASE_URL}/api/v1/contract/candles?symbol={symbol}&interval=15m&limit={limit}"
+        url = f"{MEXC_BASE_URL}/api/v1/contract/detail"
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
-        candles = data.get("data", [])
-        if not candles:
-            print(f"⚠️ {symbol} のローソク足データが空")
-            return None
-
-        # ここで最初の1本を出力
-        print(f"📝 {symbol} 最初のローソク足: {candles[0]}")
-
-        # 列名は自動推測し、必要な列だけfloat変換
-        df = pd.DataFrame(candles)
-        df.columns = [f"col_{i}" for i in range(len(df.columns))]
-
-        mapping = {
-            "ts": "col_0",
-            "open": "col_1",
-            "high": "col_2",
-            "low": "col_3",
-            "close": "col_4",
-            "vol": "col_5"
-        }
-        df = df.rename(columns={v: k for k, v in mapping.items() if v in df.columns})
-
-        for col in ["open", "high", "low", "close", "vol"]:
-            if col in df.columns:
-                df[col] = df[col].astype(float)
-
-        df = df.iloc[::-1].copy()  # 時間昇順
-        return df
-    except requests.exceptions.Timeout:
-        send_error_to_telegram(f"{symbol} のローソク取得失敗: タイムアウト発生")
-        return None
+        arr = data.get("data", []) or []
+        return [it.get("symbol") for it in arr if it.get("symbol")]
     except Exception as e:
-        send_error_to_telegram(f"{symbol} のローソク取得失敗:\nAPIエラー: {str(e)}")
-        return None
+        send_error_to_telegram(f"先物銘柄一覧取得失敗:\n{str(e)}")
+        return []
+
+def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
+    """
+    MEXC の contract K-line を取得する（retry有り）
+    使うエンドポイント: /api/v1/contract/kline/{symbol}?interval=Min15
+    （interval は MEXC 形式にマッピング）
+    """
+    # interval mapping
+    imap = {
+        '1m': 'Min1', '5m': 'Min5', '15m': 'Min15', '30m': 'Min30',
+        '60m': 'Min60', '4h': 'Hour4', '8h': 'Hour8', '1d': 'Day1',
+        '1w': 'Week1', '1M': 'Month1'
+    }
+    interval_param = imap.get(interval, 'Min15')
+    url = f"{MEXC_BASE_URL}/api/v1/contract/kline/{symbol}?interval={interval_param}"
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = requests.get(url, timeout=timeout_sec)
+            res.raise_for_status()
+            data = res.json()
+
+            # APIが success=false を返す場合のチェック
+            if not data.get("success", False):
+                # エラーメッセージを取り、リトライ/終了を判断
+                err_msg = data.get("message") or data.get("code") or "Unknown"
+                raise ValueError(f"API returned success=false: {err_msg}")
+
+            k = data.get("data", {}) or {}
+            times = k.get("time") or []
+            if not times:
+                raise ValueError("kline data empty")
+
+            # debug: 最初のローソクをログ
+            first_sample = {
+                "time": times[0],
+                "open": (k.get("open")[0] if k.get("open") else None),
+                "high": (k.get("high")[0] if k.get("high") else None),
+                "low": (k.get("low")[0] if k.get("low") else None),
+                "close": (k.get("close")[0] if k.get("close") else None),
+                "vol": (k.get("vol")[0] if k.get("vol") else None),
+            }
+            print(f"📝 {symbol} kline sample (first): {first_sample}")
+
+            # build rows from arrays (length may vary, so guard indexes)
+            open_arr = k.get("open", [])
+            high_arr = k.get("high", [])
+            low_arr = k.get("low", [])
+            close_arr = k.get("close", [])
+            vol_arr = k.get("vol", [])
+
+            rows = []
+            n = len(times)
+            for i in range(n):
+                row = {
+                    "ts": int(times[i]),
+                    "open": float(open_arr[i]) if i < len(open_arr) and open_arr[i] is not None else None,
+                    "high": float(high_arr[i]) if i < len(high_arr) and high_arr[i] is not None else None,
+                    "low": float(low_arr[i]) if i < len(low_arr) and low_arr[i] is not None else None,
+                    "close": float(close_arr[i]) if i < len(close_arr) and close_arr[i] is not None else None,
+                    "vol": float(vol_arr[i]) if i < len(vol_arr) and vol_arr[i] is not None else None,
+                }
+                rows.append(row)
+
+            df = pd.DataFrame(rows)
+            # 時刻は秒単位の可能性が高いので、必要なら ms に変換するなどの処理はここで行う
+            df = df.sort_values("ts").reset_index(drop=True)
+            return df
+
+        except requests.exceptions.Timeout:
+            print(f"⚠️ {symbol} のローソク取得タイムアウト（試行 {attempt}/{max_retries}）")
+            if attempt == max_retries:
+                send_error_to_telegram(f"{symbol} のローソク取得失敗: タイムアウト発生")
+        except Exception as e:
+            print(f"⚠️ {symbol} のローソク取得エラー: {e}（試行 {attempt}/{max_retries}）")
+            # 最終試行なら通知
+            if attempt == max_retries:
+                send_error_to_telegram(f"{symbol} のローソク取得失敗:\n{str(e)}")
+        time.sleep(1)  # リトライ間隔
+
+    return None
 
 def is_ath_today(current_price, df):
     try:
@@ -117,7 +169,8 @@ def analyze_with_groq(df, symbol):
     prompt = f"""
 以下は {symbol} の15分足データです。価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
 
-**JSONのみで返答してください**
+**構造化JSONでのみ返答してください**
+
 {{
   "今後下落する可能性は高いか": "はい" または "いいえ",
   "理由": "～",
@@ -162,6 +215,9 @@ def send_to_telegram(symbol, result):
 def run_analysis():
     print("🚀 分析開始")
     top_tickers = get_top_symbols_by_24h_change()
+    available = get_available_contract_symbols()
+    # 取得可能な symbol のみ残す（念のため）
+    top_tickers = [t for t in top_tickers if t["symbol"] in available]
     symbols = [t["symbol"] for t in top_tickers]
     print(f"🔎 対象銘柄: {symbols}")
     for ticker in top_tickers:
@@ -170,9 +226,9 @@ def run_analysis():
         try:
             print("==============================")
             print(f"🔔 {symbol} の処理開始")
-            df = fetch_ohlcv(symbol)
+            df = fetch_ohlcv(symbol, interval='15m')
             if df is None:
-                print(f"⚠️ {symbol} のローソク足取得失敗。スキップ")
+                print(f"⚠️ {symbol} のローソク足データ取得失敗。スキップ")
                 continue
             ath_flag, ath_price = is_ath_today(current_price, df)
             print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
