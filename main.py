@@ -80,6 +80,7 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
     使うエンドポイント: /api/v1/contract/kline/{symbol}?interval=Min15
     （interval は MEXC 形式にマッピング）
     """
+    # interval mapping
     imap = {
         '1m': 'Min1', '5m': 'Min5', '15m': 'Min15', '30m': 'Min30',
         '60m': 'Min60', '4h': 'Hour4', '8h': 'Hour8', '1d': 'Day1',
@@ -94,7 +95,9 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
             res.raise_for_status()
             data = res.json()
 
+            # APIが success=false を返す場合のチェック
             if not data.get("success", False):
+                # エラーメッセージを取り、リトライ/終了を判断
                 err_msg = data.get("message") or data.get("code") or "Unknown"
                 raise ValueError(f"API returned success=false: {err_msg}")
 
@@ -103,6 +106,18 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
             if not times:
                 raise ValueError("kline data empty")
 
+            # debug: 最初のローソクをログ
+            first_sample = {
+                "time": times[0],
+                "open": (k.get("open")[0] if k.get("open") else None),
+                "high": (k.get("high")[0] if k.get("high") else None),
+                "low": (k.get("low")[0] if k.get("low") else None),
+                "close": (k.get("close")[0] if k.get("close") else None),
+                "vol": (k.get("vol")[0] if k.get("vol") else None),
+            }
+            print(f"📝 {symbol} kline sample (first): {first_sample}")
+
+            # build rows from arrays (length may vary, so guard indexes)
             open_arr = k.get("open", [])
             high_arr = k.get("high", [])
             low_arr = k.get("low", [])
@@ -123,6 +138,7 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
                 rows.append(row)
 
             df = pd.DataFrame(rows)
+            # 時刻は秒単位の可能性が高いので、必要なら ms に変換するなどの処理はここで行う
             df = df.sort_values("ts").reset_index(drop=True)
             return df
 
@@ -132,9 +148,10 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
                 send_error_to_telegram(f"{symbol} のローソク取得失敗: タイムアウト発生")
         except Exception as e:
             print(f"⚠️ {symbol} のローソク取得エラー: {e}（試行 {attempt}/{max_retries}）")
+            # 最終試行なら通知
             if attempt == max_retries:
                 send_error_to_telegram(f"{symbol} のローソク取得失敗:\n{str(e)}")
-        time.sleep(1)
+        time.sleep(1)  # リトライ間隔
 
     return None
 
@@ -144,45 +161,45 @@ def fetch_daily_ohlcv_max(symbol):
 
 def is_ath_today(current_price, df_15m, df_daily):
     try:
+        # 15分足と日足の両方から最高値を抽出
         ath_price = max(df_15m["high"].max(), df_daily["high"].max())
+        # ATHの90%以上の場合 True とする
         return current_price >= ath_price * 0.9, ath_price
     except Exception:
         return False, None
 
 def analyze_with_groq(df, symbol):
     if len(df) < 2:
-        return {"今後下落する可能性": "不明", "理由": "データ不足", "下落幅予測": "不明", "下落タイミング": "不明"}
+        return {"今後下落する可能性は高いか": "不明"}
 
-    latest, prev = df.iloc[-1], df.iloc[-2]
+    # 最新から過去にかけて4本に1本を抽出（1時間足相当）、100本まで
+    df_reduced = df.iloc[::-1].iloc[::4].head(100).iloc[::-1]
 
-    df_reduced = df.tail(100)[["ts", "open", "high", "low", "close"]].round(4)
-    df_reduced["time"] = pd.to_datetime(df_reduced["ts"], unit='s').astype(str)
-    df_reduced = df_reduced.drop(columns=["ts"])
-
-    now_str = datetime.utcnow().strftime("%m月%d日 %H:%M UTC")
-
+    latest, prev = df_reduced.iloc[-1], df_reduced.iloc[-2]
     prompt = f"""
-以下は {symbol} の15分足データ（最新100本）です。価格が過去最高であることを踏まえ、今後短期的に下落する確率（％）と理由、予測される下落幅および下落タイミングを具体的に教えてください。
+以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新100本まで）です。
+価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
 
 **構造化JSONでのみ返答してください**
 
 {{
-  "今後下落する可能性": "0から100までの数字（％）",
-  "理由": "下落する可能性の根拠を具体的に説明してください",
-  "下落幅予測": "-x.x%",
-  "下落タイミング": "具体的な日時や時間帯を記述してください（例: 10日22時45分頃）なお現在日時は{now_str}です"
+  "今後下落する可能性は高いか": "xx%",  # 0%から100%の数値パーセンテージで記載してください
+  "理由": "～",
+  "予測される下落幅": "-x.x%",
+  "予測される下落タイミング": "例: 08月10日 15:12頃（なお現在日時は{now_str}です）"
 }}
 
-参考データ:
+参考データ（最新と前回の比較）:
 - 前回比: {latest['close'] / prev['close']:.4f}
 - 直近価格: {latest['close']}
+- 出来高: {latest['vol']}
 
-15分足データ（time, open, high, low, close）:
+全データ(JSON配列形式):
 {df_reduced.to_dict(orient='records')}
 """
-
+    
     print(f"📝 Groqに送信するプロンプト（{symbol}）:\n{prompt}")
-
+    
     try:
         res = client.chat.completions.create(
             model="llama3-70b-8192",
@@ -191,18 +208,18 @@ def analyze_with_groq(df, symbol):
         )
         content = res.choices[0].message.content
         match = re.search(r"\{[\s\S]*?\}", content)
-        return json.loads(match.group(0)) if match else {"今後下落する可能性": "不明", "理由": "不明", "下落幅予測": "不明", "下落タイミング": "不明"}
+        return json.loads(match.group(0)) if match else {"今後下落する可能性は高いか": "不明"}
     except Exception as e:
         send_error_to_telegram(f"Groqエラー: {str(e)}")
-        return {"今後下落する可能性": "不明", "理由": "不明", "下落幅予測": "不明", "下落タイミング": "不明"}
-
+        return {"今後下落する可能性は高いか": "不明"}
+        
 def send_to_telegram(symbol, result):
     text = f"""📉 ATH銘柄警告: {symbol}
 
-- 今後下落する可能性: {result.get('今後下落する可能性', '?')}
+- 今後下落する可能性: {result.get('今後下落する可能性は高いか', '?')}
 - 理由: {result.get('理由', '?')}
-- 下落幅予測: {result.get('下落幅予測', '?')}
-- 下落タイミング: {result.get('下落タイミング', '?')}
+- 下落幅予測: {result.get('予測される下落幅', '?')}
+- 下落タイミング: {result.get('予測される下落タイミング', '?')}
 """
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -216,6 +233,7 @@ def run_analysis():
     print("🚀 分析開始")
     top_tickers = get_top_symbols_by_24h_change()
     available = get_available_contract_symbols()
+    # 取得可能な symbol のみ残す（念のため）
     top_tickers = [t for t in top_tickers if t["symbol"] in available]
     symbols = [t["symbol"] for t in top_tickers]
     print(f"🔎 対象銘柄: {symbols}")
