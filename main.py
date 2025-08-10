@@ -22,7 +22,7 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 
-TOP_SYMBOLS_LIMIT = 10  # 24h変化率トップ10対象
+TOP_SYMBOLS_LIMIT = 5  # 24h変化率トップ10対象
 
 def send_error_to_telegram(error_message):
     try:
@@ -155,7 +155,7 @@ def run_analysis():
             result = analyze_with_groq(df, symbol)
             send_to_telegram(symbol, result)
             print(f"✅ {symbol} の分析完了・通知送信済み")
-            time.sleep(10)  # API制限回避
+            time.sleep(1)  # API制限回避
         except Exception as e:
             send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
     print("✅ 分析終了")
