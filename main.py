@@ -174,8 +174,6 @@ def index():
 
 @app.route("/run_analysis", methods=["GET", "HEAD"])
 def run_analysis_route():
-    if request.method == "HEAD":
-        return "", 200  # UptimeRobot監視用
     run_analysis()
     return "分析完了", 200
 
