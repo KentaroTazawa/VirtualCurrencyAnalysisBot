@@ -5,7 +5,7 @@ import traceback
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
-from flask import Flask
+from flask import Flask, request
 from groq import Groq
 from dotenv import load_dotenv
 import re
@@ -22,23 +22,26 @@ client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 notified_in_memory = {}
 
-TOP_SYMBOLS_LIMIT = 5  # 24h変化率トップ10対象
+TOP_SYMBOLS_LIMIT = 5  # 24h変化率トップ5対象
 
 def send_error_to_telegram(error_message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": f"⚠️ エラー発生:\n\n{error_message}"})
+        requests.post(
+            url,
+            data={"chat_id": TELEGRAM_CHAT_ID, "text": f"⚠️ エラー発生:\n\n{error_message}"},
+            timeout=10
+        )
     except:
         pass
 
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
     try:
         url = f"{MEXC_BASE_URL}/api/v1/contract/market/tickers"
-        res = requests.get(url)
+        res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
         tickers = data.get("data", [])
-        # 24h変化率計算： (lastPrice - openPrice) / openPrice * 100
         filtered = []
         for t in tickers:
             try:
@@ -53,32 +56,35 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
                 continue
         sorted_tickers = sorted(filtered, key=lambda x: x["change_pct"], reverse=True)
         return sorted_tickers[:limit]
+    except requests.exceptions.Timeout:
+        send_error_to_telegram("MEXC 急上昇銘柄取得エラー: タイムアウト発生")
+        return []
     except Exception as e:
         send_error_to_telegram(f"MEXC 急上昇銘柄取得エラー:\n{str(e)}")
         return []
 
 def fetch_ohlcv(symbol, limit=2000):
     try:
-        # MEXC先物の15分足ローソク足取得（limitは最大2000）
         url = f"{MEXC_BASE_URL}/api/v1/contract/candles?symbol={symbol}&interval=15m&limit={limit}"
-        res = requests.get(url)
+        res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
         candles = data.get("data", [])
         if not candles:
             return None
-        # candlesは [timestamp, open, high, low, close, volume] のリストのリスト
         df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "vol"])
         df[["open", "high", "low", "close", "vol"]] = df[["open", "high", "low", "close", "vol"]].astype(float)
-        df = df.iloc[::-1].copy()  # 昇順に並び替え
+        df = df.iloc[::-1].copy()
         return df
+    except requests.exceptions.Timeout:
+        send_error_to_telegram(f"{symbol} のローソク取得失敗: タイムアウト発生")
+        return None
     except Exception as e:
         send_error_to_telegram(f"{symbol} のローソク取得失敗:\n{str(e)}")
         return None
 
 def is_ath_today(current_price, df):
     try:
-        # 過去のローソク足の高値の最高値をATHとみなす
         ath_price = df["high"].max()
         return current_price >= ath_price, ath_price
     except Exception:
@@ -128,7 +134,9 @@ def send_to_telegram(symbol, result):
 """
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
+    except requests.exceptions.Timeout:
+        send_error_to_telegram(f"Telegram送信エラー: タイムアウト発生")
     except Exception as e:
         send_error_to_telegram(f"Telegram送信エラー:\n{str(e)}")
 
@@ -156,7 +164,7 @@ def run_analysis():
             send_to_telegram(symbol, result)
             print(f"✅ {symbol} の分析完了・通知送信済み")
             time.sleep(1)  # API制限回避
-        except Exception as e:
+        except Exception:
             send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
     print("✅ 分析終了")
 
@@ -164,8 +172,10 @@ def run_analysis():
 def index():
     return "OK"
 
-@app.route("/run_analysis")
+@app.route("/run_analysis", methods=["GET", "HEAD"])
 def run_analysis_route():
+    if request.method == "HEAD":
+        return "", 200  # UptimeRobot監視用
     run_analysis()
     return "分析完了", 200
 
