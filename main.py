@@ -21,7 +21,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
-TOP_SYMBOLS_LIMIT = 10  # 24h変化率トップ5対象
+TOP_SYMBOLS_LIMIT = 30  # 24h変化率トップxx対象
 
 def send_error_to_telegram(error_message):
     try:
@@ -163,7 +163,8 @@ def is_ath_today(current_price, df_15m, df_daily):
     try:
         # 15分足と日足の両方から最高値を抽出
         ath_price = max(df_15m["high"].max(), df_daily["high"].max())
-        return current_price >= ath_price, ath_price
+        # ATHの90%以上の場合 True とする
+        return current_price >= ath_price * 0.9, ath_price
     except Exception:
         return False, None
 
