@@ -172,16 +172,18 @@ def analyze_with_groq(df, symbol):
     if len(df) < 2:
         return {"今後下落する可能性は高いか": "不明"}
 
-    # 最新から過去にかけて4本に1本を抽出（1時間足相当）、100本まで
-    df_reduced = df.iloc[::-1].iloc[::4].head(100).iloc[::-1]
-    latest, prev = df_reduced.iloc[-1], df_reduced.iloc[-2]
+    # 最新から過去にかけて4本に1本を抽出（1時間足相当）、200本まで
+    df_reduced = df.iloc[::-1].iloc[::4].head(200).iloc[::-1]
+    
+    # 必要なカラムだけ抽出（ts, close, vol）
+    records = df_reduced[['ts', 'close', 'vol']].to_dict(orient='records')
     
     from datetime import datetime, timedelta
     now_plus_9h = datetime.utcnow() + timedelta(hours=9)
     now_str = now_plus_9h.strftime("%Y年%m月%d日 %H:%M")
     
     prompt = f"""
-以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新100本まで）です。
+以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新200本まで）です。
 価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
 
 **構造化JSONでのみ返答してください**
@@ -193,13 +195,8 @@ def analyze_with_groq(df, symbol):
   "予測される下落タイミング": "例: 08月10日 15:12頃（なお現在日時は{now_str}です）"
 }}
 
-参考データ（最新と前回の比較）:
-- 前回比: {latest['close'] / prev['close']:.4f}
-- 直近価格: {latest['close']}
-- 出来高: {latest['vol']}
-
 全データ(JSON配列形式):
-{df_reduced.to_dict(orient='records')}
+{records}
 """
     
     print(f"📝 Groqに送信するプロンプト（{symbol}）:\n{prompt}")
@@ -211,6 +208,7 @@ def analyze_with_groq(df, symbol):
             temperature=0.3
         )
         content = res.choices[0].message.content
+        import re, json
         match = re.search(r"\{[\s\S]*?\}", content)
         return json.loads(match.group(0)) if match else {"今後下落する可能性は高いか": "不明"}
     except Exception as e:
