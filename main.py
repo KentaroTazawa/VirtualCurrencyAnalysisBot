@@ -189,6 +189,9 @@ def analyze_with_groq(df, symbol):
 - 直近価格: {latest['close']}
 - 出来高: {latest['vol']}
 """
+    
+    print(f"📝 Groqに送信するプロンプト（{symbol}）:\n{prompt}")
+    
     try:
         res = client.chat.completions.create(
             model="llama3-70b-8192",
