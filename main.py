@@ -174,8 +174,10 @@ def analyze_with_groq(df, symbol):
 
     # 最新から過去にかけて4本に1本を抽出（1時間足相当）、100本まで
     df_reduced = df.iloc[::-1].iloc[::4].head(100).iloc[::-1]
-
     latest, prev = df_reduced.iloc[-1], df_reduced.iloc[-2]
+    
+    now_str = datetime.now().strftime("%Y年%m月%d日 %H:%M")
+    
     prompt = f"""
 以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新100本まで）です。
 価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
