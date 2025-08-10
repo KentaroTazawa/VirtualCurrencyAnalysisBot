@@ -21,7 +21,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
-TOP_SYMBOLS_LIMIT = 30  # 24h変化率トップxx対象
+TOP_SYMBOLS_LIMIT = 20  # 24h変化率トップxx対象
 
 def send_error_to_telegram(error_message):
     try:
