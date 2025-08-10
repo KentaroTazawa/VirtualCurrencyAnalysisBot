@@ -41,22 +41,16 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
-        
-        # デバッグ用ログ
-        print(f"DEBUG: APIレスポンス data keys: {list(data.keys())}")
-        print(f"DEBUG: data content sample: {json.dumps(data, ensure_ascii=False)[:500]}")  # 先頭500文字だけ表示
-        
+
         tickers = data.get("data", [])
         filtered = []
         for t in tickers:
             try:
                 symbol = t.get("symbol", "")
                 last_price = float(t.get("lastPrice", 0))
-                open_price = float(t.get("openPrice", 0))
-                if open_price == 0:
-                    continue
-                change_pct = (last_price - open_price) / open_price * 100
-                filtered.append({"symbol": symbol, "last_price": last_price, "change_pct": change_pct})
+                # open_price はレスポンスにないので使わず、riseFallRateを直接使う
+                rise_fall_rate = float(t.get("riseFallRate", 0)) * 100  # 例: 0.0139 → 1.39%
+                filtered.append({"symbol": symbol, "last_price": last_price, "change_pct": rise_fall_rate})
             except:
                 continue
         sorted_tickers = sorted(filtered, key=lambda x: x["change_pct"], reverse=True)
