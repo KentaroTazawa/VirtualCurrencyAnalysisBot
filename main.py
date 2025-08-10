@@ -48,7 +48,6 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
             try:
                 symbol = t.get("symbol", "")
                 last_price = float(t.get("lastPrice", 0))
-                # open_price はレスポンスにないので使わず、riseFallRateを直接使う
                 rise_fall_rate = float(t.get("riseFallRate", 0)) * 100  # 例: 0.0139 → 1.39%
                 filtered.append({"symbol": symbol, "last_price": last_price, "change_pct": rise_fall_rate})
             except:
@@ -63,16 +62,23 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
         return []
 
 def fetch_ohlcv(symbol, limit=2000):
+    # symbol の区切りをOKX API形式に変換（_ → -）
+    symbol_okx = symbol.replace("_", "-")
+    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol_okx}&bar=15m&limit={limit}"
     try:
-        url = f"{MEXC_BASE_URL}/api/v1/contract/candles?symbol={symbol}&interval=15m&limit={limit}"
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
+        if data.get("code") != "0":
+            raise ValueError(f"APIエラー: {data.get('msg')}")
         candles = data.get("data", [])
         if not candles:
             return None
-        df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "vol"])
+        # OKXのキャンドルは [timestamp, open, high, low, close, volume, ...] のリスト形式
+        df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "vol", "extra1", "extra2"])
+        df = df[["ts", "open", "high", "low", "close", "vol"]]
         df[["open", "high", "low", "close", "vol"]] = df[["open", "high", "low", "close", "vol"]].astype(float)
+        # OKXのデータは新しい順なので逆順にする
         df = df.iloc[::-1].copy()
         return df
     except requests.exceptions.Timeout:
