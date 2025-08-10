@@ -2,10 +2,10 @@ import os
 import json
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 import requests
 import pandas as pd
-from flask import Flask, request
+from flask import Flask
 from groq import Groq
 from dotenv import load_dotenv
 import re
@@ -20,7 +20,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
-notified_in_memory = {}
 
 TOP_SYMBOLS_LIMIT = 5  # 24h変化率トップ5対象
 
@@ -36,6 +35,7 @@ def send_error_to_telegram(error_message):
         pass
 
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
+    """MEXCの急上昇銘柄を取得"""
     try:
         url = f"{MEXC_BASE_URL}/api/v1/contract/ticker"
         res = requests.get(url, timeout=10)
@@ -48,7 +48,7 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
             try:
                 symbol = t.get("symbol", "")
                 last_price = float(t.get("lastPrice", 0))
-                rise_fall_rate = float(t.get("riseFallRate", 0)) * 100  # 例: 0.0139 → 1.39%
+                rise_fall_rate = float(t.get("riseFallRate", 0)) * 100
                 filtered.append({"symbol": symbol, "last_price": last_price, "change_pct": rise_fall_rate})
             except:
                 continue
@@ -62,30 +62,45 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
         return []
 
 def fetch_ohlcv(symbol, limit=2000):
-    # symbol の区切りをOKX API形式に変換（_ → -）
-    symbol_okx = symbol.replace("_", "-")
-    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol_okx}&bar=15m&limit={limit}"
+    """MEXCからローソク足を取得"""
     try:
+        url = f"{MEXC_BASE_URL}/api/v1/contract/candles?symbol={symbol}&interval=15m&limit={limit}"
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
-        if data.get("code") != "0":
-            raise ValueError(f"APIエラー: {data.get('msg')}")
         candles = data.get("data", [])
         if not candles:
+            print(f"⚠️ {symbol} のローソク足データが空")
             return None
-        # OKXのキャンドルは [timestamp, open, high, low, close, volume, ...] のリスト形式
-        df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "vol", "extra1", "extra2"])
-        df = df[["ts", "open", "high", "low", "close", "vol"]]
-        df[["open", "high", "low", "close", "vol"]] = df[["open", "high", "low", "close", "vol"]].astype(float)
-        # OKXのデータは新しい順なので逆順にする
-        df = df.iloc[::-1].copy()
+
+        # ここで最初の1本を出力
+        print(f"📝 {symbol} 最初のローソク足: {candles[0]}")
+
+        # 列名は自動推測し、必要な列だけfloat変換
+        df = pd.DataFrame(candles)
+        df.columns = [f"col_{i}" for i in range(len(df.columns))]
+
+        mapping = {
+            "ts": "col_0",
+            "open": "col_1",
+            "high": "col_2",
+            "low": "col_3",
+            "close": "col_4",
+            "vol": "col_5"
+        }
+        df = df.rename(columns={v: k for k, v in mapping.items() if v in df.columns})
+
+        for col in ["open", "high", "low", "close", "vol"]:
+            if col in df.columns:
+                df[col] = df[col].astype(float)
+
+        df = df.iloc[::-1].copy()  # 時間昇順
         return df
     except requests.exceptions.Timeout:
         send_error_to_telegram(f"{symbol} のローソク取得失敗: タイムアウト発生")
         return None
     except Exception as e:
-        send_error_to_telegram(f"{symbol} のローソク取得失敗:\n{str(e)}")
+        send_error_to_telegram(f"{symbol} のローソク取得失敗:\nAPIエラー: {str(e)}")
         return None
 
 def is_ath_today(current_price, df):
@@ -100,10 +115,9 @@ def analyze_with_groq(df, symbol):
         return {"今後下落する可能性は高いか": "不明"}
     latest, prev = df.iloc[-1], df.iloc[-2]
     prompt = f"""
-以下は {symbol} の15分足テクニカルデータです。価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
+以下は {symbol} の15分足データです。価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
 
-**構造化JSONでのみ返答してください**
-
+**JSONのみで返答してください**
 {{
   "今後下落する可能性は高いか": "はい" または "いいえ",
   "理由": "～",
@@ -112,7 +126,7 @@ def analyze_with_groq(df, symbol):
 }}
 
 参考データ:
-- RSI近似: {latest['close'] / prev['close']:.4f}
+- 前回比: {latest['close'] / prev['close']:.4f}
 - 直近価格: {latest['close']}
 - 出来高: {latest['vol']}
 """
@@ -141,7 +155,7 @@ def send_to_telegram(symbol, result):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
     except requests.exceptions.Timeout:
-        send_error_to_telegram(f"Telegram送信エラー: タイムアウト発生")
+        send_error_to_telegram("Telegram送信エラー: タイムアウト発生")
     except Exception as e:
         send_error_to_telegram(f"Telegram送信エラー:\n{str(e)}")
 
@@ -154,11 +168,11 @@ def run_analysis():
         symbol = ticker["symbol"]
         current_price = ticker["last_price"]
         try:
-            print(f"==============================")
+            print("==============================")
             print(f"🔔 {symbol} の処理開始")
             df = fetch_ohlcv(symbol)
             if df is None:
-                print(f"⚠️ {symbol} のローソク足データ取得失敗。スキップ")
+                print(f"⚠️ {symbol} のローソク足取得失敗。スキップ")
                 continue
             ath_flag, ath_price = is_ath_today(current_price, df)
             print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
@@ -168,7 +182,7 @@ def run_analysis():
             result = analyze_with_groq(df, symbol)
             send_to_telegram(symbol, result)
             print(f"✅ {symbol} の分析完了・通知送信済み")
-            time.sleep(1)  # API制限回避
+            time.sleep(1)
         except Exception:
             send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
     print("✅ 分析終了")
