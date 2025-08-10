@@ -155,9 +155,14 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
 
     return None
 
-def is_ath_today(current_price, df):
+def fetch_daily_ohlcv_max(symbol):
+    """日足の最大件数まで取得"""
+    return fetch_ohlcv(symbol, interval='1d')
+
+def is_ath_today(current_price, df_15m, df_daily):
     try:
-        ath_price = df["high"].max()
+        # 15分足と日足の両方から最高値を抽出
+        ath_price = max(df_15m["high"].max(), df_daily["high"].max())
         return current_price >= ath_price, ath_price
     except Exception:
         return False, None
@@ -226,16 +231,22 @@ def run_analysis():
         try:
             print("==============================")
             print(f"🔔 {symbol} の処理開始")
-            df = fetch_ohlcv(symbol, interval='15m')
-            if df is None:
-                print(f"⚠️ {symbol} のローソク足データ取得失敗。スキップ")
+            df_15m = fetch_ohlcv(symbol, interval='15m')
+            if df_15m is None:
+                print(f"⚠️ {symbol} の15分足データ取得失敗。スキップ")
                 continue
-            ath_flag, ath_price = is_ath_today(current_price, df)
+            df_daily = fetch_daily_ohlcv_max(symbol)
+            if df_daily is None:
+                print(f"⚠️ {symbol} の日足取得失敗。スキップ")
+                continue
+
+            ath_flag, ath_price = is_ath_today(current_price, df_15m, df_daily)
             print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
             if not ath_flag:
                 print(f"ℹ️ {symbol} はATHではありません。スキップ")
                 continue
-            result = analyze_with_groq(df, symbol)
+
+            result = analyze_with_groq(df_15m, symbol)
             send_to_telegram(symbol, result)
             print(f"✅ {symbol} の分析完了・通知送信済み")
             time.sleep(1)
