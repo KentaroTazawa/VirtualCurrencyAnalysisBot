@@ -37,7 +37,8 @@ def send_error_to_telegram(error_message):
 
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
     try:
-        url = f"{MEXC_BASE_URL}/api/v1/contract/market/tickers"
+        # 先物の最新24時間ティッカーAPIへ修正
+        url = f"{MEXC_BASE_URL}/api/v1/contract/ticker"
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
