@@ -2,7 +2,7 @@ import os
 import json
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
 from flask import Flask
@@ -21,7 +21,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
-TOP_SYMBOLS_LIMIT = 20  # 24h変化率トップxx対象
+TOP_SYMBOLS_LIMIT = 30  # 24h変化率トップxx対象
+NOTIFY_CACHE = {}  # {symbol: last_notify_datetime}
 
 def send_error_to_telegram(error_message):
     try:
@@ -95,9 +96,7 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
             res.raise_for_status()
             data = res.json()
 
-            # APIが success=false を返す場合のチェック
             if not data.get("success", False):
-                # エラーメッセージを取り、リトライ/終了を判断
                 err_msg = data.get("message") or data.get("code") or "Unknown"
                 raise ValueError(f"API returned success=false: {err_msg}")
 
@@ -106,7 +105,6 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
             if not times:
                 raise ValueError("kline data empty")
 
-            # debug: 最初のローソクをログ
             first_sample = {
                 "time": times[0],
                 "open": (k.get("open")[0] if k.get("open") else None),
@@ -117,7 +115,6 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
             }
             print(f"📝 {symbol} kline sample (first): {first_sample}")
 
-            # build rows from arrays (length may vary, so guard indexes)
             open_arr = k.get("open", [])
             high_arr = k.get("high", [])
             low_arr = k.get("low", [])
@@ -138,7 +135,6 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
                 rows.append(row)
 
             df = pd.DataFrame(rows)
-            # 時刻は秒単位の可能性が高いので、必要なら ms に変換するなどの処理はここで行う
             df = df.sort_values("ts").reset_index(drop=True)
             return df
 
@@ -148,10 +144,9 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
                 send_error_to_telegram(f"{symbol} のローソク取得失敗: タイムアウト発生")
         except Exception as e:
             print(f"⚠️ {symbol} のローソク取得エラー: {e}（試行 {attempt}/{max_retries}）")
-            # 最終試行なら通知
             if attempt == max_retries:
                 send_error_to_telegram(f"{symbol} のローソク取得失敗:\n{str(e)}")
-        time.sleep(1)  # リトライ間隔
+        time.sleep(1)
 
     return None
 
@@ -161,9 +156,7 @@ def fetch_daily_ohlcv_max(symbol):
 
 def is_ath_today(current_price, df_15m, df_daily):
     try:
-        # 15分足と日足の両方から最高値を抽出
         ath_price = max(df_15m["high"].max(), df_daily["high"].max())
-        # ATHの90%以上の場合 True とする
         return current_price >= ath_price * 0.9, ath_price
     except Exception:
         return False, None
@@ -172,13 +165,9 @@ def analyze_with_groq(df, symbol):
     if len(df) < 2:
         return {"今後下落する可能性は高いか": "不明"}
 
-    # 最新から過去にかけて4本に1本を抽出（1時間足相当）、200本まで
     df_reduced = df.iloc[::-1].iloc[::4].head(200).iloc[::-1]
-    
-    # 必要なカラムだけ抽出（ts, close, vol）
     records = df_reduced[['ts', 'close', 'vol']].to_dict(orient='records')
     
-    from datetime import datetime, timedelta
     now_plus_9h = datetime.utcnow() + timedelta(hours=9)
     now_str = now_plus_9h.strftime("%Y年%m月%d日 %H:%M")
     
@@ -189,8 +178,8 @@ def analyze_with_groq(df, symbol):
 **構造化JSONでのみ返答してください**
 
 {{
-  "今後下落する可能性は高いか": "xx%",  # 0%から100%の数値パーセンテージで記載してください
-  "理由": "～",  # 日本語で34文字以内で記載してください
+  "今後下落する可能性は高いか": "xx%",
+  "理由": "～",
   "予測される下落幅": "-x.x%",
   "予測される下落タイミング": "例: 8月10日 15:12頃（なお現在日時は{now_str}です）"
 }}
@@ -208,7 +197,6 @@ def analyze_with_groq(df, symbol):
             temperature=0.3
         )
         content = res.choices[0].message.content
-        import re, json
         match = re.search(r"\{[\s\S]*?\}", content)
         return json.loads(match.group(0)) if match else {"今後下落する可能性は高いか": "不明"}
     except Exception as e:
@@ -233,15 +221,23 @@ def send_to_telegram(symbol, result):
 
 def run_analysis():
     print("🚀 分析開始")
+    now = datetime.utcnow()
     top_tickers = get_top_symbols_by_24h_change()
     available = get_available_contract_symbols()
-    # 取得可能な symbol のみ残す（念のため）
     top_tickers = [t for t in top_tickers if t["symbol"] in available]
     symbols = [t["symbol"] for t in top_tickers]
     print(f"🔎 対象銘柄: {symbols}")
     for ticker in top_tickers:
         symbol = ticker["symbol"]
         current_price = ticker["last_price"]
+
+        # キャッシュ判定（1時間以内はスキップ）
+        if symbol in NOTIFY_CACHE:
+            last_time = NOTIFY_CACHE[symbol]
+            if now - last_time < timedelta(hours=1):
+                print(f"⏩ {symbol} は通知から1時間未満のためスキップ")
+                continue
+
         try:
             print("==============================")
             print(f"🔔 {symbol} の処理開始")
@@ -262,6 +258,10 @@ def run_analysis():
 
             result = analyze_with_groq(df_15m, symbol)
             send_to_telegram(symbol, result)
+
+            # 通知時刻を記録
+            NOTIFY_CACHE[symbol] = now
+
             print(f"✅ {symbol} の分析完了・通知送信済み")
             time.sleep(1)
         except Exception:
