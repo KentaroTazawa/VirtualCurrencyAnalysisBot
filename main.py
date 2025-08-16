@@ -189,13 +189,16 @@ def analyze_with_groq(df, symbol):
     records = df_reduced[['ts', 'close', 'vol']].to_dict(orient='records')
     indicators = calculate_indicators(df_reduced)
 
+    # NaNやinfを避けるため安全に文字列化
+    safe_indicators = ", ".join([f"{k}: {v}" for k, v in indicators.items()])
+
     now_plus_9h = datetime.utcnow() + timedelta(hours=9)
     now_str = now_plus_9h.strftime("%Y年%m月%d日 %H:%M")
 
     prompt = f"""
 以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新100本まで）です。
 価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
-各種テクニカル指標も参考にしてください: {json.dumps(indicators)}
+各種テクニカル指標も参考にしてください: {safe_indicators}
 
 **必ず以下の条件を守ってJSON形式で返答してください**：
 - 「理由」は必ず60文字以内のですます調の自然な日本語で書くこと
