@@ -21,7 +21,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
-TOP_SYMBOLS_LIMIT = 30  # 24h変化率トップxx対象
+TOP_SYMBOLS_LIMIT = 20  # 24h変化率トップxx対象
 NOTIFICATION_CACHE = {}  # {symbol: last_notified_timestamp}
 
 
@@ -149,12 +149,45 @@ def is_ath_today(current_price, df_15m, df_daily):
         return False, None
 
 
+def calculate_indicators(df):
+    """RSI, ボラティリティ, 出来高変化率, 移動平均乖離率を計算"""
+    result = {}
+    if len(df) < 2:
+        return result
+
+    close = df['close']
+    vol = df['vol']
+
+    # RSI (14)
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14, min_periods=1).mean()
+    avg_loss = loss.rolling(14, min_periods=1).mean()
+    rs = avg_gain / (avg_loss + 1e-8)
+    rsi = 100 - (100 / (1 + rs))
+    result['RSI'] = round(rsi.iloc[-1], 2)
+
+    # ボラティリティ（標準偏差）
+    result['Volatility'] = round(close.pct_change().rolling(14, min_periods=1).std().iloc[-1] * 100, 2)
+
+    # 出来高変化率
+    result['VolChange'] = round(vol.pct_change().rolling(14, min_periods=1).mean().iloc[-1] * 100, 2)
+
+    # 移動平均乖離率（15本）
+    ma = close.rolling(15, min_periods=1).mean()
+    result['MA_Deviation'] = round((close.iloc[-1] / ma.iloc[-1] - 1) * 100, 2)
+
+    return result
+
+
 def analyze_with_groq(df, symbol):
     if len(df) < 2:
         return {"今後下落する可能性は高いか": "不明"}
 
     df_reduced = df.iloc[::-1].iloc[::4].head(100).iloc[::-1]
     records = df_reduced[['ts', 'close', 'vol']].to_dict(orient='records')
+    indicators = calculate_indicators(df_reduced)
 
     now_plus_9h = datetime.utcnow() + timedelta(hours=9)
     now_str = now_plus_9h.strftime("%Y年%m月%d日 %H:%M")
@@ -162,24 +195,14 @@ def analyze_with_groq(df, symbol):
     prompt = f"""
 以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新100本まで）です。
 価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
+各種テクニカル指標も参考にしてください: {json.dumps(indicators)}
 
 **必ず以下の条件を守ってJSON形式で返答してください**：
-- 「理由」は必ず60文字以内のですます調の自然な日本語で書くこと（英語は禁止）。
-- 「下落可能性」は必ず小数第2位までの%で返す（例: 72.49%）。
-- 「下落幅」も必ず小数第2位までの%で返す（例: -5.53%）。
-- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で分刻みの具体的な時刻で返す（〜頃などの曖昧な表現は禁止、現在日時は{now_str}です）。
-- 「推奨損切り水準」と「推奨利確水準」も必ず小数第1位までの%で返す（例: -3.5% / +4.2%）。
-- 損切り・利確は必ず現在価格を基準にした変化率（%）で示すこと。
-
-出力フォーマット（このJSON構造以外は返さないこと）：
-{{
-  "下落可能性": "xx.xx%", 
-  "理由": "～",  
-  "下落幅": "-x.xx%",
-  "下落時期": "YYYY年MM月DD日 HH:MM",
-  "推奨損切り水準": "-x.x%",
-  "推奨利確水準": "+x.x%"
-}}
+- 「理由」は必ず60文字以内のですます調の自然な日本語で書くこと
+- 「下落可能性」は必ず小数第2位までの%で返す
+- 「下落幅」も必ず小数第2位までの%で返す
+- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で返す（現在日時は{now_str}）
+- 「推奨損切り水準」と「推奨利確水準」も必ず小数第1位までの%で返す
 
 全データ(JSON配列形式):
 {records}
@@ -194,7 +217,9 @@ def analyze_with_groq(df, symbol):
         )
         content = res.choices[0].message.content
         match = re.search(r"\{[\s\S]*?\}", content)
-        return json.loads(match.group(0)) if match else {"今後下落する可能性は高いか": "不明"}
+        result = json.loads(match.group(0)) if match else {"今後下落する可能性は高いか": "不明"}
+        result['Indicators'] = indicators  # Telegram通知にも追加
+        return result
     except Exception as e:
         send_error_to_telegram(f"Groqエラー: {str(e)}")
         return {"今後下落する可能性は高いか": "不明"}
@@ -202,6 +227,8 @@ def analyze_with_groq(df, symbol):
 
 def send_to_telegram(symbol, result):
     display_symbol = symbol.replace("_USDT", "")
+    indicators = result.get('Indicators', {})
+    indicator_text = "\n".join([f"{k}: {v}" for k, v in indicators.items()]) if indicators else ""
     text = f"""📉 ATH下落予測: {display_symbol}
 
 予測時刻: {result.get('下落時期', '?')}
@@ -211,6 +238,9 @@ def send_to_telegram(symbol, result):
 損切水準: {result.get('推奨損切り水準', '?')}
 
 理由: {result.get('理由', '?')}
+
+--- 指標 ---
+{indicator_text}
 """
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -222,12 +252,10 @@ def send_to_telegram(symbol, result):
 
 
 def run_analysis():
-    #print("🚀 分析開始")
     top_tickers = get_top_symbols_by_24h_change()
     available = get_available_contract_symbols()
     top_tickers = [t for t in top_tickers if t["symbol"] in available]
     symbols = [t["symbol"] for t in top_tickers]
-    #print(f"🔎 対象銘柄: {symbols}")
 
     now = datetime.utcnow()
     for ticker in top_tickers:
@@ -236,12 +264,9 @@ def run_analysis():
 
         last_time = NOTIFICATION_CACHE.get(symbol)
         if last_time and (now - last_time) < timedelta(hours=1):
-            #print(f"⏩ {symbol} は直近1時間以内に通知済み。スキップ")
             continue
 
         try:
-            #print("==============================")
-            #print(f"🔔 {symbol} の処理開始")
             df_15m = fetch_ohlcv(symbol, interval='15m')
             if df_15m is None:
                 continue
@@ -250,18 +275,15 @@ def run_analysis():
                 continue
 
             ath_flag, ath_price = is_ath_today(current_price, df_15m, df_daily)
-            #print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
             if not ath_flag:
                 continue
 
             result = analyze_with_groq(df_15m, symbol)
             send_to_telegram(symbol, result)
             NOTIFICATION_CACHE[symbol] = now
-            #print(f"✅ {symbol} の分析完了・通知送信済み")
             time.sleep(1)
         except Exception:
             send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
-    #print("✅ 分析終了")
 
 
 @app.route("/")
