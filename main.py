@@ -200,14 +200,17 @@ def analyze_with_groq(df, symbol):
 価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
 各種テクニカル指標も参考にしてください: {safe_indicators}
 
-**必ず以下の条件を守ってJSON形式で返答してください**：
+**必ず以下の条件を守って「厳密なJSON形式」で返答してください**：
+- JSONのキー・値はすべてダブルクォーテーションで囲む
+- JSON以外の文字は出力しない
+- 項目は以下の通り（必ず含める）:
 - 「理由」は必ず60文字以内の自然な日本語で書くこと（最後は絵文字で終わること）
-- 「下落可能性」は必ず小数第2位までの%で返す
+- 「下落可能性」は必ず小数第2位までの%で返す（毎回同じような値にならないようにきちんと分析に基づいて示すこと）
 - 「下落幅」も必ず小数第2位までの%で返す
-- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で返す（現在日時は{now_str}）
+- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で返し、きちんと分析に基づいて分刻みで示すこと（現在日時は{now_str}です）
 - 「推奨損切り水準」と「推奨利確水準」も必ず小数第1位までの%で返す
 
-この全データ(JSON配列形式)も全て活かして分析してください:
+この全データ(JSON配列形式)も必ず全て活かして分析してください:
 {records}
 """
     print(f"📝 Groqに送信するプロンプト（{symbol}）:\n{prompt}")
@@ -219,10 +222,22 @@ def analyze_with_groq(df, symbol):
             temperature=0.25
         )
         content = res.choices[0].message.content
-        match = re.search(r"\{[\s\S]*?\}", content)
-        result = json.loads(match.group(0)) if match else {"今後下落する可能性は高いか": "不明"}
+
+        # JSONを正規化
+        match = re.search(r"\{[\s\S]*\}", content)
+        if not match:
+            raise ValueError("Groq出力にJSONが含まれていません")
+
+        json_text = match.group(0)
+
+        # JSONのキーが日本語の場合でもダブルクォートで囲まれているかチェック
+        # （Groqが守らなかった場合のフォールバック）
+        fixed_json = re.sub(r'([{\s,])([^\s":]+?):', r'\1"\2":', json_text)
+
+        result = json.loads(fixed_json)
         result['Indicators'] = indicators  # Telegram通知にも追加
         return result
+    
     except Exception as e:
         send_error_to_telegram(f"Groqエラー: {str(e)}")
         return {"今後下落する可能性は高いか": "不明"}
