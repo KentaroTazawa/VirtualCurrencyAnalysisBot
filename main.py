@@ -21,7 +21,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
-TOP_SYMBOLS_LIMIT = 50  # 24h変化率トップxx対象
+TOP_SYMBOLS_LIMIT = 30  # 24h変化率トップxx対象
 NOTIFICATION_CACHE = {}  # {symbol: last_notified_timestamp}
 
 def send_error_to_telegram(error_message):
@@ -156,21 +156,21 @@ def analyze_with_groq(df, symbol):
     if len(df) < 2:
         return {"今後下落する可能性は高いか": "不明"}
 
-    df_reduced = df.iloc[::-1].iloc[::4].head(200).iloc[::-1]
+    df_reduced = df.iloc[::-1].iloc[::4].head(100).iloc[::-1]
     records = df_reduced[['ts', 'close', 'vol']].to_dict(orient='records')
 
     now_plus_9h = datetime.utcnow() + timedelta(hours=9)
     now_str = now_plus_9h.strftime("%Y年%m月%d日 %H:%M")
 
     prompt = f"""
-以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新200本まで）です。
+以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新100本まで）です。
 価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
 
 **必ず以下の条件を守ってJSON形式で返答してください**：
 - 「理由」は必ず自然な日本語で書くこと（英語は禁止）。
 - 「下落可能性」は必ず小数第2位までの%で返す（例: 72.49%）。
 - 「下落幅」も必ず小数第2位までの%で返す（例: -5.53%）。
-- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で返す（〜頃などの曖昧な表現は禁止）。
+- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で分刻みの具体的な時刻で返す（〜頃などの曖昧な表現は禁止、また現在日時は{now_str}です）。
 
 出力フォーマット（このJSON構造以外は返さないこと）：
 {{
