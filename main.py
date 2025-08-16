@@ -21,8 +21,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
 
-TOP_SYMBOLS_LIMIT = 30  # 24h変化率トップxx対象
-NOTIFY_CACHE = {}  # {symbol: last_notify_datetime}
+TOP_SYMBOLS_LIMIT = 50  # 24h変化率トップxx対象
+NOTIFICATION_CACHE = {}  # {symbol: last_notified_timestamp}
 
 def send_error_to_telegram(error_message):
     try:
@@ -36,7 +36,6 @@ def send_error_to_telegram(error_message):
         pass
 
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
-    """MEXC の先物ティッカー（24h変化）を取得"""
     try:
         url = f"{MEXC_BASE_URL}/api/v1/contract/ticker"
         res = requests.get(url, timeout=10)
@@ -49,7 +48,7 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
             try:
                 symbol = t.get("symbol", "")
                 last_price = float(t.get("lastPrice", 0))
-                rise_fall_rate = float(t.get("riseFallRate", 0)) * 100  # 0.0139 -> 1.39%
+                rise_fall_rate = float(t.get("riseFallRate", 0)) * 100
                 filtered.append({"symbol": symbol, "last_price": last_price, "change_pct": rise_fall_rate})
             except:
                 continue
@@ -63,7 +62,6 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
         return []
 
 def get_available_contract_symbols():
-    """contract/detail から先物の正式 symbol 一覧を取得（フィルター用）"""
     try:
         url = f"{MEXC_BASE_URL}/api/v1/contract/detail"
         res = requests.get(url, timeout=10)
@@ -76,12 +74,6 @@ def get_available_contract_symbols():
         return []
 
 def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
-    """
-    MEXC の contract K-line を取得する（retry有り）
-    使うエンドポイント: /api/v1/contract/kline/{symbol}?interval=Min15
-    （interval は MEXC 形式にマッピング）
-    """
-    # interval mapping
     imap = {
         '1m': 'Min1', '5m': 'Min5', '15m': 'Min15', '30m': 'Min30',
         '60m': 'Min60', '4h': 'Hour4', '8h': 'Hour8', '1d': 'Day1',
@@ -151,7 +143,6 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
     return None
 
 def fetch_daily_ohlcv_max(symbol):
-    """日足の最大件数まで取得"""
     return fetch_ohlcv(symbol, interval='1d')
 
 def is_ath_today(current_price, df_15m, df_daily):
@@ -167,29 +158,33 @@ def analyze_with_groq(df, symbol):
 
     df_reduced = df.iloc[::-1].iloc[::4].head(200).iloc[::-1]
     records = df_reduced[['ts', 'close', 'vol']].to_dict(orient='records')
-    
+
     now_plus_9h = datetime.utcnow() + timedelta(hours=9)
     now_str = now_plus_9h.strftime("%Y年%m月%d日 %H:%M")
-    
+
     prompt = f"""
 以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新200本まで）です。
 価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
 
-**構造化JSONでのみ返答してください**
+**必ず以下の条件を守ってJSON形式で返答してください**：
+- 「理由」は必ず自然な日本語で書くこと（英語は禁止）。
+- 「下落可能性」は必ず小数第2位までの%で返す（例: 72.49%）。
+- 「下落幅」も必ず小数第2位までの%で返す（例: -5.53%）。
+- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で返す（〜頃などの曖昧な表現は禁止）。
 
+出力フォーマット（このJSON構造以外は返さないこと）：
 {{
-  "今後下落する可能性は高いか": "xx%",
-  "理由": "～",
-  "予測される下落幅": "-x.x%",
-  "予測される下落タイミング": "例: 8月10日 15:12頃（なお現在日時は{now_str}です）"
+  "下落可能性": "xx.xx%", 
+  "理由": "～",  
+  "下落幅": "-x.xx%",
+  "下落時期": "YYYY年MM月DD日 HH:MM"
 }}
 
 全データ(JSON配列形式):
 {records}
 """
-    
     print(f"📝 Groqに送信するプロンプト（{symbol}）:\n{prompt}")
-    
+
     try:
         res = client.chat.completions.create(
             model="llama3-70b-8192",
@@ -202,14 +197,15 @@ def analyze_with_groq(df, symbol):
     except Exception as e:
         send_error_to_telegram(f"Groqエラー: {str(e)}")
         return {"今後下落する可能性は高いか": "不明"}
-        
+
 def send_to_telegram(symbol, result):
-    text = f"""📉 ATH銘柄警告: {symbol}
+    display_symbol = symbol.replace("_USDT", "")
+    text = f"""📉 ATH下落予測: {display_symbol}
 
 - 今後下落する可能性: {result.get('今後下落する可能性は高いか', '?')}
 - 理由: {result.get('理由', '?')}
 - 下落幅予測: {result.get('予測される下落幅', '?')}
-- 下落タイミング: {result.get('予測される下落タイミング', '?')}
+- 下落時期: {result.get('予測される下落タイミング', '?')}
 """
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -221,47 +217,40 @@ def send_to_telegram(symbol, result):
 
 def run_analysis():
     print("🚀 分析開始")
-    now = datetime.utcnow()
     top_tickers = get_top_symbols_by_24h_change()
     available = get_available_contract_symbols()
     top_tickers = [t for t in top_tickers if t["symbol"] in available]
     symbols = [t["symbol"] for t in top_tickers]
     print(f"🔎 対象銘柄: {symbols}")
+
+    now = datetime.utcnow()
     for ticker in top_tickers:
         symbol = ticker["symbol"]
         current_price = ticker["last_price"]
 
-        # キャッシュ判定（1時間以内はスキップ）
-        if symbol in NOTIFY_CACHE:
-            last_time = NOTIFY_CACHE[symbol]
-            if now - last_time < timedelta(hours=1):
-                print(f"⏩ {symbol} は通知から1時間未満のためスキップ")
-                continue
+        last_time = NOTIFICATION_CACHE.get(symbol)
+        if last_time and (now - last_time) < timedelta(hours=1):
+            print(f"⏩ {symbol} は直近1時間以内に通知済み。スキップ")
+            continue
 
         try:
             print("==============================")
             print(f"🔔 {symbol} の処理開始")
             df_15m = fetch_ohlcv(symbol, interval='15m')
             if df_15m is None:
-                print(f"⚠️ {symbol} の15分足データ取得失敗。スキップ")
                 continue
             df_daily = fetch_daily_ohlcv_max(symbol)
             if df_daily is None:
-                print(f"⚠️ {symbol} の日足取得失敗。スキップ")
                 continue
 
             ath_flag, ath_price = is_ath_today(current_price, df_15m, df_daily)
             print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
             if not ath_flag:
-                print(f"ℹ️ {symbol} はATHではありません。スキップ")
                 continue
 
             result = analyze_with_groq(df_15m, symbol)
             send_to_telegram(symbol, result)
-
-            # 通知時刻を記録
-            NOTIFY_CACHE[symbol] = now
-
+            NOTIFICATION_CACHE[symbol] = now
             print(f"✅ {symbol} の分析完了・通知送信済み")
             time.sleep(1)
         except Exception:
