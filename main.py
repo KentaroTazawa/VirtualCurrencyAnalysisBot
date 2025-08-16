@@ -201,13 +201,13 @@ def analyze_with_groq(df, symbol):
 各種テクニカル指標も参考にしてください: {safe_indicators}
 
 **必ず以下の条件を守ってJSON形式で返答してください**：
-- 「理由」は必ず60文字以内のですます調の自然な日本語で書くこと
+- 「理由」は必ず60文字以内の自然な日本語で書くこと（最後は絵文字で終わること）
 - 「下落可能性」は必ず小数第2位までの%で返す
 - 「下落幅」も必ず小数第2位までの%で返す
 - 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で返す（現在日時は{now_str}）
 - 「推奨損切り水準」と「推奨利確水準」も必ず小数第1位までの%で返す
 
-全データ(JSON配列形式):
+この全データ(JSON配列形式)も全て活かして分析してください:
 {records}
 """
     print(f"📝 Groqに送信するプロンプト（{symbol}）:\n{prompt}")
@@ -232,15 +232,16 @@ def send_to_telegram(symbol, result):
     display_symbol = symbol.replace("_USDT", "")
     indicators = result.get('Indicators', {})
     indicator_text = "\n".join([f"{k}: {v}" for k, v in indicators.items()]) if indicators else ""
-    text = f"""📉 ATH下落予測: {display_symbol}
+    text = f"""📉 ATH下落予測:　{display_symbol}
 
-予測時刻: {result.get('下落時期', '?')}
-下落確率: {result.get('下落可能性', '?')}
-下落幅予測: {result.get('下落幅', '?')}
-利確水準: {result.get('推奨利確水準', '?')}
-損切水準: {result.get('推奨損切り水準', '?')}
+　予測時刻:　{result.get('下落時期', '?')}
+　下落確率:　{result.get('下落可能性', '?')}
+下落幅予測:　{result.get('下落幅', '?')}
+　利確水準:　{result.get('推奨利確水準', '?')}
+　損切水準:　{result.get('推奨損切り水準', '?')}
 
-理由: {result.get('理由', '?')}
+--- 解説 ---
+{result.get('理由', '?')}
 
 --- 指標 ---
 {indicator_text}
