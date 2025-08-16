@@ -167,7 +167,7 @@ def analyze_with_groq(df, symbol):
 価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
 
 **必ず以下の条件を守ってJSON形式で返答してください**：
-- 「理由」は必ず自然な日本語で書くこと（英語は禁止）。
+- 「理由」は必ず60文字以内のですます調の自然な日本語で書くこと（英語は禁止）。
 - 「下落可能性」は必ず小数第2位までの%で返す（例: 72.49%）。
 - 「下落幅」も必ず小数第2位までの%で返す（例: -5.53%）。
 - 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で分刻みの具体的な時刻で返す（〜頃などの曖昧な表現は禁止、また現在日時は{now_str}です）。
@@ -200,12 +200,14 @@ def analyze_with_groq(df, symbol):
 
 def send_to_telegram(symbol, result):
     display_symbol = symbol.replace("_USDT", "")
-    text = f"""📉 ATH下落予測: {display_symbol}
+    text = f"""📉 ATH下落予測:　{display_symbol}
 
-- 下落可能性: {result.get('下落可能性', '?')}
-- 理由: {result.get('理由', '?')}
-- 下落幅: {result.get('下落幅', '?')}
-- 下落時期: {result.get('下落時期', '?')}
+予測時期:　{result.get('下落時期', '?')}
+　　確率:　{result.get('下落可能性', '?')}
+　下落幅:　{result.get('下落幅', '?')}
+ 
+　　理由:
+{result.get('理由', '?')}
 """
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
