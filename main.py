@@ -202,10 +202,10 @@ def send_to_telegram(symbol, result):
     display_symbol = symbol.replace("_USDT", "")
     text = f"""📉 ATH下落予測: {display_symbol}
 
-- 今後下落する可能性: {result.get('今後下落する可能性は高いか', '?')}
+- 下落可能性: {result.get('下落可能性', '?')}
 - 理由: {result.get('理由', '?')}
-- 下落幅予測: {result.get('予測される下落幅', '?')}
-- 下落時期: {result.get('予測される下落タイミング', '?')}
+- 下落幅: {result.get('下落幅', '?')}
+- 下落時期: {result.get('下落時期', '?')}
 """
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
