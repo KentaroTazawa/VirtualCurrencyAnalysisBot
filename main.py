@@ -24,6 +24,7 @@ app = Flask(__name__)
 TOP_SYMBOLS_LIMIT = 30  # 24h変化率トップxx対象
 NOTIFICATION_CACHE = {}  # {symbol: last_notified_timestamp}
 
+
 def send_error_to_telegram(error_message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -34,6 +35,7 @@ def send_error_to_telegram(error_message):
         )
     except:
         pass
+
 
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
     try:
@@ -61,6 +63,7 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
         send_error_to_telegram(f"MEXC 急上昇銘柄取得エラー:\n{str(e)}")
         return []
 
+
 def get_available_contract_symbols():
     try:
         url = f"{MEXC_BASE_URL}/api/v1/contract/detail"
@@ -72,6 +75,7 @@ def get_available_contract_symbols():
     except Exception as e:
         send_error_to_telegram(f"先物銘柄一覧取得失敗:\n{str(e)}")
         return []
+
 
 def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
     imap = {
@@ -96,16 +100,6 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
             times = k.get("time") or []
             if not times:
                 raise ValueError("kline data empty")
-
-            first_sample = {
-                "time": times[0],
-                "open": (k.get("open")[0] if k.get("open") else None),
-                "high": (k.get("high")[0] if k.get("high") else None),
-                "low": (k.get("low")[0] if k.get("low") else None),
-                "close": (k.get("close")[0] if k.get("close") else None),
-                "vol": (k.get("vol")[0] if k.get("vol") else None),
-            }
-            print(f"📝 {symbol} kline sample (first): {first_sample}")
 
             open_arr = k.get("open", [])
             high_arr = k.get("high", [])
@@ -142,8 +136,10 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
 
     return None
 
+
 def fetch_daily_ohlcv_max(symbol):
     return fetch_ohlcv(symbol, interval='1d')
+
 
 def is_ath_today(current_price, df_15m, df_daily):
     try:
@@ -151,6 +147,7 @@ def is_ath_today(current_price, df_15m, df_daily):
         return current_price >= ath_price * 0.9, ath_price
     except Exception:
         return False, None
+
 
 def analyze_with_groq(df, symbol):
     if len(df) < 2:
@@ -170,10 +167,9 @@ def analyze_with_groq(df, symbol):
 - 「理由」は必ず60文字以内のですます調の自然な日本語で書くこと（英語は禁止）。
 - 「下落可能性」は必ず小数第2位までの%で返す（例: 72.49%）。
 - 「下落幅」も必ず小数第2位までの%で返す（例: -5.53%）。
-- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で分刻みの具体的な時刻で返す（〜頃などの曖昧な表現は禁止、また現在日時は{now_str}です）。
+- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で分刻みの具体的な時刻で返す（〜頃などの曖昧な表現は禁止、現在日時は{now_str}です）。
 - 「推奨損切り水準」と「推奨利確水準」も必ず小数第1位までの%で返す（例: -3.5% / +4.2%）。
 - 損切り・利確は必ず現在価格を基準にした変化率（%）で示すこと。
-
 
 出力フォーマット（このJSON構造以外は返さないこと）：
 {{
@@ -194,7 +190,7 @@ def analyze_with_groq(df, symbol):
         res = client.chat.completions.create(
             model="llama3-70b-8192",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
+            temperature=0.25
         )
         content = res.choices[0].message.content
         match = re.search(r"\{[\s\S]*?\}", content)
@@ -203,18 +199,18 @@ def analyze_with_groq(df, symbol):
         send_error_to_telegram(f"Groqエラー: {str(e)}")
         return {"今後下落する可能性は高いか": "不明"}
 
+
 def send_to_telegram(symbol, result):
     display_symbol = symbol.replace("_USDT", "")
-    text = f"""📉 ATH下落予測:　{display_symbol}
+    text = f"""📉 ATH下落予測: {display_symbol}
 
-予測時期:　{result.get('下落時期', '?')}
-　　確率:　{result.get('下落可能性', '?')}
-　下落幅:　{result.get('下落幅', '?')}
-利確水準:　{result.get('推奨利確水準', '?')}
-損切水準:　{result.get('推奨損切り水準', '?')}
- 
-　　理由:
-{result.get('理由', '?')}
+予測時刻: {result.get('下落時期', '?')}
+下落確率: {result.get('下落可能性', '?')}
+下落幅予測: {result.get('下落幅', '?')}
+利確水準: {result.get('推奨利確水準', '?')}
+損切水準: {result.get('推奨損切り水準', '?')}
+
+理由: {result.get('理由', '?')}
 """
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -224,13 +220,14 @@ def send_to_telegram(symbol, result):
     except Exception as e:
         send_error_to_telegram(f"Telegram送信エラー:\n{str(e)}")
 
+
 def run_analysis():
-    print("🚀 分析開始")
+    #print("🚀 分析開始")
     top_tickers = get_top_symbols_by_24h_change()
     available = get_available_contract_symbols()
     top_tickers = [t for t in top_tickers if t["symbol"] in available]
     symbols = [t["symbol"] for t in top_tickers]
-    print(f"🔎 対象銘柄: {symbols}")
+    #print(f"🔎 対象銘柄: {symbols}")
 
     now = datetime.utcnow()
     for ticker in top_tickers:
@@ -239,12 +236,12 @@ def run_analysis():
 
         last_time = NOTIFICATION_CACHE.get(symbol)
         if last_time and (now - last_time) < timedelta(hours=1):
-            print(f"⏩ {symbol} は直近1時間以内に通知済み。スキップ")
+            #print(f"⏩ {symbol} は直近1時間以内に通知済み。スキップ")
             continue
 
         try:
-            print("==============================")
-            print(f"🔔 {symbol} の処理開始")
+            #print("==============================")
+            #print(f"🔔 {symbol} の処理開始")
             df_15m = fetch_ohlcv(symbol, interval='15m')
             if df_15m is None:
                 continue
@@ -253,27 +250,30 @@ def run_analysis():
                 continue
 
             ath_flag, ath_price = is_ath_today(current_price, df_15m, df_daily)
-            print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
+            #print(f"💹 {symbol} 現在価格: {current_price} / ATH価格: {ath_price}")
             if not ath_flag:
                 continue
 
             result = analyze_with_groq(df_15m, symbol)
             send_to_telegram(symbol, result)
             NOTIFICATION_CACHE[symbol] = now
-            print(f"✅ {symbol} の分析完了・通知送信済み")
+            #print(f"✅ {symbol} の分析完了・通知送信済み")
             time.sleep(1)
         except Exception:
             send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
-    print("✅ 分析終了")
+    #print("✅ 分析終了")
+
 
 @app.route("/")
 def index():
     return "OK"
 
+
 @app.route("/run_analysis", methods=["GET", "HEAD"])
 def run_analysis_route():
     run_analysis()
     return "分析完了", 200
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
