@@ -231,10 +231,13 @@ def analyze_with_groq(df, symbol):
         json_text = match.group(0)
 
         # JSONのキーが日本語の場合でもダブルクォートで囲まれているかチェック
-        # （Groqが守らなかった場合のフォールバック）
         fixed_json = re.sub(r'([{\s,])([^\s":]+?):', r'\1"\2":', json_text)
 
+        # JSONの末尾に余計なカンマがある場合を修正
+        fixed_json = re.sub(r",\s*([}\]])", r"\1", fixed_json)
+
         result = json.loads(fixed_json)
+        
         result['Indicators'] = indicators  # Telegram通知にも追加
         return result
     
