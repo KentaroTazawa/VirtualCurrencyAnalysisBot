@@ -223,6 +223,9 @@ def analyze_with_groq(df, symbol):
         )
         content = res.choices[0].message.content
 
+        # 👇 Groqの生出力をログ出力
+        print(f"🔍 Groq生出力（{symbol}）:\n{content}")
+
         # JSONを正規化
         match = re.search(r"\{[\s\S]*\}", content)
         if not match:
