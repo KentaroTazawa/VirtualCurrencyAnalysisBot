@@ -192,10 +192,10 @@ def analyze_with_groq(df, symbol):
     now_str = now_plus_9h.strftime("%Y年%m月%d日 %H:%M")
 
     prompt = f"""
-以下は {symbol} の1時間足相当データです。
-テクニカル指標も参考にして分析してください: {indicators}
-
-最新日時: {now_str}
+以下は先物の仮想通貨「 {symbol} 」に関する各種データです。
+これらを分析して下落日時、下落確率、下落幅、利確ライン、損切りライン正確に予測し、日本語で教えてください。
+現在日時: {now_str}
+テクニカル指標: {indicators}
 データサンプル: {records}
 """
     print(f"📝 Groqに送信するプロンプト（{symbol}）:\n{prompt}")
