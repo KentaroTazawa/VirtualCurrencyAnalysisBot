@@ -180,6 +180,8 @@ def calculate_indicators(df):
 
     return result
 
+def percent_to_float(m):
+    return str(float(m.group(1)))
 
 def analyze_with_groq(df, symbol):
     if len(df) < 2:
@@ -234,6 +236,9 @@ def analyze_with_groq(df, symbol):
         # 最初に見つかったJSONを採用
         json_text = json_candidates[0]
 
+        json_text = re.sub(r'([0-9]+\.[0-9]+)%', percent_to_float, json_text)
+        json_text = re.sub(r'([0-9]+)%', percent_to_float, json_text)
+        
         # 不要な空白やカンマ修正
         fixed_json = re.sub(r'([{\s,])([^\s":]+?):', r'\1"\2":', json_text)
         fixed_json = re.sub(r",\s*([}\]])", r"\1", fixed_json)
