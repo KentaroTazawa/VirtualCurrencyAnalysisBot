@@ -226,20 +226,20 @@ def analyze_with_groq(df, symbol):
         # 👇 Groqの生出力をログ出力
         print(f"🔍 Groq生出力（{symbol}）:\n{content}")
 
-# JSON部分だけ抽出
-json_candidates = re.findall(r"\{[\s\S]*?\}", content)
-if not json_candidates:
-    raise ValueError("Groq出力にJSONが含まれていません")
+        # JSON部分だけ抽出
+        json_candidates = re.findall(r"\{[\s\S]*?\}", content)
+        if not json_candidates:
+            raise ValueError("Groq出力にJSONが含まれていません")
 
-# 最初に見つかったJSONを採用
-json_text = json_candidates[0]
+        # 最初に見つかったJSONを採用
+        json_text = json_candidates[0]
 
-# 不要な空白やカンマ修正
-fixed_json = re.sub(r'([{\s,])([^\s":]+?):', r'\1"\2":', json_text)
-fixed_json = re.sub(r",\s*([}\]])", r"\1", fixed_json)
+        # 不要な空白やカンマ修正
+        fixed_json = re.sub(r'([{\s,])([^\s":]+?):', r'\1"\2":', json_text)
+        fixed_json = re.sub(r",\s*([}\]])", r"\1", fixed_json)
 
-# 改行削除でパース安定化
-fixed_json = re.sub(r"\n\s*", "", fixed_json)
+        # 改行削除でパース安定化
+        fixed_json = re.sub(r"\n\s*", "", fixed_json)
         
         try:
             result = json.loads(fixed_json)
