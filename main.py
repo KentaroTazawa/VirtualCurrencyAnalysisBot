@@ -192,12 +192,13 @@ def analyze_with_groq(df, symbol):
     now_str = now_plus_9h.strftime("%Y年%m月%d日 %H:%M")
 
     prompt = f"""
+回答は必ずすべて日本語でお願いします！
 以下は先物の仮想通貨「 {symbol} 」に関する各種データです。
 これらを分析して理想的なショート注文日時、下落確率、下落幅、利確パーセンテージ、損切りパーセンテージを正確に予測してください。
 現在日時: {now_str}
 テクニカル指標: {indicators}
 データサンプル: {records}
-出力はすべて日本語でお願いします。
+回答は必ずすべて日本語でお願いします！
 """
     print(f"📝 Groqに送信するプロンプト（{symbol}）:\n{prompt}")
 
