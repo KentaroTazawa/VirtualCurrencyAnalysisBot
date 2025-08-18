@@ -8,7 +8,6 @@ import pandas as pd
 from flask import Flask
 from groq import Groq
 from dotenv import load_dotenv
-import re
 
 load_dotenv()
 
@@ -180,40 +179,24 @@ def calculate_indicators(df):
 
     return result
 
-def percent_to_float(m):
-    return str(float(m.group(1)))
 
 def analyze_with_groq(df, symbol):
     if len(df) < 2:
-        return {"今後下落する可能性は高いか": "不明"}
+        return {"分析結果": "データ不足"}
 
     df_reduced = df.iloc[::-1].iloc[::4].head(100).iloc[::-1]
     records = df_reduced[['ts', 'close', 'vol']].to_dict(orient='records')
     indicators = calculate_indicators(df_reduced)
 
-    # NaNやinfを避けるため安全に文字列化
-    safe_indicators = ", ".join([f"{k}: {v}" for k, v in indicators.items()])
-
     now_plus_9h = datetime.utcnow() + timedelta(hours=9)
     now_str = now_plus_9h.strftime("%Y年%m月%d日 %H:%M")
 
     prompt = f"""
-以下は {symbol} の1時間足相当データ（15分足を4本に1本間引き、最新100本まで）です。
-価格が過去最高であることを踏まえ、今後短期的に下落する可能性を分析してください。
-各種テクニカル指標も参考にしてください: {safe_indicators}
+以下は {symbol} の1時間足相当データです。
+テクニカル指標も参考にして分析してください: {indicators}
 
-**必ず以下の条件を守って「厳密なJSON形式」で返答してください**：
-- JSONのキー・値はすべてダブルクォーテーションで囲む
-- JSON以外の文字は出力しない
-- 項目は以下の通り（必ず含める）:
-- 「理由」は必ず60文字以内の自然な日本語で書くこと（最後は絵文字で終わること）
-- 「下落可能性」は必ず小数第2位までの%で返す（毎回同じような値にならないようにきちんと分析に基づいて示すこと）
-- 「下落幅」も必ず小数第2位までの%で返す
-- 「下落時期」はJSTで「YYYY年MM月DD日 HH:MM」の形式で返し、きちんと分析に基づいて分刻みで示すこと（現在日時は{now_str}です）
-- 「推奨損切り水準」と「推奨利確水準」も必ず小数第1位までの%で返す
-
-この全データ(JSON配列形式)も必ず全て活かして分析してください:
-{records}
+最新日時: {now_str}
+データサンプル: {records}
 """
     print(f"📝 Groqに送信するプロンプト（{symbol}）:\n{prompt}")
 
@@ -225,40 +208,13 @@ def analyze_with_groq(df, symbol):
         )
         content = res.choices[0].message.content
 
-        # 👇 Groqの生出力をログ出力
+        # Groq出力をそのまま通知用に返す
         print(f"🔍 Groq生出力（{symbol}）:\n{content}")
+        return {"分析結果": content, "Indicators": indicators}
 
-        # JSON部分だけ抽出
-        json_candidates = re.findall(r"\{[\s\S]*?\}", content)
-        if not json_candidates:
-            raise ValueError("Groq出力にJSONが含まれていません")
-
-        # 最初に見つかったJSONを採用
-        json_text = json_candidates[0]
-
-        json_text = re.sub(r'([0-9]+\.[0-9]+)%', percent_to_float, json_text)
-        json_text = re.sub(r'([0-9]+)%', percent_to_float, json_text)
-        
-        # 不要な空白やカンマ修正
-        fixed_json = re.sub(r'([{\s,])([^\s":]+?):', r'\1"\2":', json_text)
-        fixed_json = re.sub(r",\s*([}\]])", r"\1", fixed_json)
-
-        # 改行削除でパース安定化
-        fixed_json = re.sub(r"\n\s*", "", fixed_json)
-        
-        try:
-            result = json.loads(fixed_json)
-        except Exception:
-            # 値の間にカンマ補完
-            fixed_json2 = re.sub(r'"\s+"', '", "', fixed_json)
-            result = json.loads(fixed_json2)
-
-        result['Indicators'] = indicators
-        return result
-    
     except Exception as e:
         send_error_to_telegram(f"Groqエラー: {str(e)}")
-        return {"今後下落する可能性は高いか": "不明"}
+        return {"分析結果": "エラー発生"}
 
 
 def send_to_telegram(symbol, result):
@@ -267,14 +223,8 @@ def send_to_telegram(symbol, result):
     indicator_text = "\n".join([f"{k}: {v}" for k, v in indicators.items()]) if indicators else ""
     text = f"""📉 ATH下落予測:　{display_symbol}
 
-　予測時刻:　{result.get('下落時期', '?')}
-　下落確率:　{result.get('下落可能性', '?')}
-下落幅予測:　{result.get('下落幅', '?')}
-　利確水準:　{result.get('推奨利確水準', '?')}
-　損切水準:　{result.get('推奨損切り水準', '?')}
-
---- 解説 ---
-{result.get('理由', '?')}
+--- Groq分析結果 ---
+{result.get('分析結果', '?')}
 
 --- 指標 ---
 {indicator_text}
