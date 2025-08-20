@@ -28,8 +28,8 @@ GROQ_MODEL = "llama3-70b-8192"
 
 # ====== シグナル・しきい値（過熱検出へ全面移行） ======
 MIN_24H_CHANGE_PCT = 10.0         # 候補最低24h変化率（やや緩め）
-RSI_OB_5M = 74.0                  # 5分RSIがこの値超えで過熱
-RSI_OB_15M = 72.0                 # 15分RSI過熱
+RSI_OB_5M = 72.0                  # 5分RSIがこの値超えで過熱
+RSI_OB_15M = 70.0                 # 15分RSI過熱
 BB_PERIOD = 20
 BB_K = 2.0
 BB_UPPER_BREAK_PCT = 0.002        # 上限バンド超えの許容超過率(0.2%)
@@ -41,7 +41,7 @@ IMPULSE_PCT_5M = 0.04             # 直近急騰の最低合計上昇率(4%)
 CONSEC_GREEN_1H = 3               # 1h連続陽線本数
 
 # スコア
-SCORE_THRESHOLD = 5               # 通知に必要な合計スコア（緩め）
+SCORE_THRESHOLD = 4               # 通知に必要な合計スコア（緩め）
 
 # 利確・損切り（固定R管理）
 ATR_PERIOD = 14
