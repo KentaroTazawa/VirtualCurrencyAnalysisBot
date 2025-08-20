@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import traceback
 from datetime import datetime, timedelta
@@ -8,7 +7,6 @@ import pandas as pd
 from flask import Flask
 from groq import Groq
 from dotenv import load_dotenv
-import math
 
 load_dotenv()
 
@@ -21,27 +19,47 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 app = Flask(__name__)
 
-# ====== 運用パラメータ ======
-TOP_SYMBOLS_LIMIT = 30           # 候補の母集団（24h上昇上位）
-MAX_ALERTS_PER_RUN = 3           # 1回の実行で通知する最大件数
-COOLDOWN_HOURS = 2               # 同一銘柄のクールダウン
-USE_GROQ_COMMENTARY = False      # TrueでGroq簡易解説を付与
+# ====== 運用パラメータ（緩めにして機会を増やす） ======
+TOP_SYMBOLS_LIMIT = 40            # 候補の母集団（24h上昇上位）
+MAX_ALERTS_PER_RUN = 5            # 1回の実行で通知する最大件数（増やす）
+COOLDOWN_HOURS = 1.0              # 同一銘柄のクールダウン（短縮）
+USE_GROQ_COMMENTARY = False       # TrueでGroq簡易解説を付与
 GROQ_MODEL = "llama3-70b-8192"
 
-# シグナル・しきい値
-MIN_24H_CHANGE_PCT = 8.0         # 候補最低24h変化率
-WICK_RATIO_MIN = 0.35            # 上ヒゲ比率(upper_wick / total_range)の最低値
-VOLUME_CLIMAX_MULT = 2.0         # 出来高クライマックス(過去20本平均の何倍)
-RSI_PERIOD = 14
+# ====== シグナル・しきい値（過熱検出へ全面移行） ======
+MIN_24H_CHANGE_PCT = 10.0         # 候補最低24h変化率（やや緩め）
+RSI_OB_5M = 74.0                  # 5分RSIがこの値超えで過熱
+RSI_OB_15M = 72.0                 # 15分RSI過熱
+BB_PERIOD = 20
+BB_K = 2.0
+BB_UPPER_BREAK_PCT = 0.002        # 上限バンド超えの許容超過率(0.2%)
+EMA_DEV_PERIOD = 50               # 50EMAからの乖離
+EMA_DEV_MIN_PCT = 7.5             # 乖離が+7.5%以上
+VOL_SPIKE_LOOKBACK = 20
+VOL_SPIKE_MULT = 2.5               # 出来高が過去20本平均の2.5倍
+IMPULSE_PCT_5M = 0.04             # 直近急騰の最低合計上昇率(4%)
+CONSEC_GREEN_1H = 3               # 1h連続陽線本数
+
+# スコア
+SCORE_THRESHOLD = 5               # 通知に必要な合計スコア（緩め）
+
+# 利確・損切り（固定R管理）
 ATR_PERIOD = 14
-SCORE_THRESHOLD = 6              # 通知に必要な合計スコア
-ATH_SWIPE_TOL = 0.997            # ATH*0.997以上で「ほぼ到達スイープ」扱い
-LOOKBACK_DAYS_FOR_SWEEP = 7      # 直近n日高値スイープも対象
+SL_ATR_MULT = 0.5                 # スイング高値 + 0.5*ATR
+TP1_R = 1.0
+TP2_R = 2.0
 
 NOTIFICATION_CACHE = {}  # {symbol: last_notified_timestamp}
 
-
 # ========= ユーティリティ =========
+
+def mexc_get(path: str, timeout=10):
+    url = f"{MEXC_BASE_URL}{path}"
+    res = requests.get(url, timeout=timeout)
+    res.raise_for_status()
+    return res.json()
+
+
 def send_error_to_telegram(error_message: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -51,19 +69,19 @@ def send_error_to_telegram(error_message: str):
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": f"⚠️ エラー発生:\n\n{error_message[:3800]}",
             },
-            timeout=10
+            timeout=10,
         )
     except:
         pass
 
 
 def tg_send_md(text: str):
-    """Telegram Markdown: 4096文字ケア"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text[:4096],
-        "parse_mode": "Markdown"
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
     }
     try:
         requests.post(url, data=payload, timeout=10)
@@ -73,15 +91,9 @@ def tg_send_md(text: str):
         send_error_to_telegram(f"Telegram送信エラー:\n{str(e)}")
 
 
-def mexc_get(path: str, timeout=10):
-    url = f"{MEXC_BASE_URL}{path}"
-    res = requests.get(url, timeout=timeout)
-    res.raise_for_status()
-    return res.json()
-
+# ========= データ取得 =========
 
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
-    # 24h上昇上位を抽出
     try:
         data = mexc_get("/api/v1/contract/ticker")
         tickers = data.get("data", [])
@@ -161,8 +173,10 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
 
 
 # ========= 指標 =========
+
 def ema(series: pd.Series, period: int) -> pd.Series:
     return series.ewm(span=period, adjust=False).mean()
+
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
@@ -172,6 +186,7 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     avg_loss = loss.rolling(period, min_periods=1).mean()
     rs = avg_gain / (avg_loss + 1e-9)
     return 100 - (100 / (1 + rs))
+
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     high = df["high"]; low = df["low"]; close = df["close"]
@@ -183,117 +198,117 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     ], axis=1).max(axis=1)
     return tr.rolling(period, min_periods=1).mean()
 
+
+def bollinger_bands(series: pd.Series, period: int = 20, k: float = 2.0):
+    ma = series.rolling(period, min_periods=1).mean()
+    std = series.rolling(period, min_periods=1).std(ddof=0)
+    upper = ma + k * std
+    lower = ma - k * std
+    return ma, upper, lower
+
+
 def upper_wick_ratio(row) -> float:
     rng = row["high"] - row["low"]
-    if rng <= 0: return 0.0
+    if rng <= 0:
+        return 0.0
     return (row["high"] - max(row["open"], row["close"])) / rng
 
-def volume_climax(vol_series: pd.Series, lookback: int = 20, mult: float = 2.0) -> bool:
-    if len(vol_series) < lookback + 1: return False
+
+def volume_spike(vol_series: pd.Series, lookback: int, mult: float) -> bool:
+    if len(vol_series) < lookback + 1:
+        return False
     ma = vol_series.rolling(lookback, min_periods=1).mean()
     return vol_series.iloc[-1] >= ma.iloc[-1] * mult
 
-def bearish_divergence(close: pd.Series, rsi_series: pd.Series, lookback=30) -> bool:
-    if len(close) < lookback + 5: return False
-    c = close.iloc[-lookback:]
-    r = rsi_series.iloc[-lookback:]
-    # 直近2つのスイング高値／RSI高値を雑に検出
-    h1_idx = c.idxmax()
-    c2 = c[c.index < h1_idx]
-    if c2.empty: return False
-    h2_idx = c2.idxmax()
-    # 価格は高値更新、RSIは更新できず
-    return (close.loc[h1_idx] > close.loc[h2_idx]) and (r.loc[h1_idx] <= r.loc[h2_idx])
 
-def recent_impulse(df: pd.DataFrame, bars=6, pct=0.06) -> bool:
-    """直近barsで終値が合計+6%以上など"""
-    if len(df) < bars + 1: return False
+def recent_impulse(df: pd.DataFrame, bars=6, pct=0.05) -> bool:
+    if len(df) < bars + 1:
+        return False
     c0 = df["close"].iloc[-bars-1]
     c1 = df["close"].iloc[-1]
     return (c1 / c0 - 1.0) >= pct
 
-def day_high_within(df_day: pd.DataFrame, days: int) -> float:
-    if df_day is None or df_day.empty: return None
-    return df_day["high"].tail(days).max()
-
-def is_ath_or_recent_sweep(current_price: float, df_15m: pd.DataFrame, df_daily: pd.DataFrame):
-    """ATHか直近n日高値を“ほぼ”上抜いた（スイープ）か"""
-    try:
-        ath = max(df_15m["high"].max(), df_daily["high"].max())
-        recent_high = day_high_within(df_daily, LOOKBACK_DAYS_FOR_SWEEP)
-        threshold = ath * ATH_SWIPE_TOL
-        cond_ath = current_price >= threshold
-        cond_recent = (recent_high is not None) and (current_price >= recent_high * ATH_SWIPE_TOL)
-        return (cond_ath or cond_recent), ath, recent_high
-    except Exception:
-        return False, None, None
 
 def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
-    """直近の押し安値割れ(BOS)を簡易判定."""
-    if len(df_5m) < 10: return False
-    highs = df_5m["high"]; lows = df_5m["low"]; closes = df_5m["close"]
-    # 直近のスイング: 直前まで高値更新が続いた後、安値を下抜け
+    if len(df_5m) < 10:
+        return False
+    lows = df_5m["low"]; closes = df_5m["close"]
     recent_low = lows.iloc[-4:-1].min()
     return closes.iloc[-1] < recent_low
 
-def score_short_setup(df_5m: pd.DataFrame, df_15m: pd.DataFrame, df_day: pd.DataFrame):
-    """ショート向きセットアップをスコア化"""
+
+def count_consecutive_green(df: pd.DataFrame) -> int:
+    # 陽線を1、陰線を0
+    body = (df["close"] - df["open"]) > 0
+    cnt = 0
+    for val in body.iloc[::-1]:
+        if val:
+            cnt += 1
+        else:
+            break
+    return cnt
+
+
+# ========= スコアリング（過熱ショート特化） =========
+
+def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df_60m: pd.DataFrame):
     score = 0
     notes = []
 
-    # ボラ拡大の衝動
-    if recent_impulse(df_5m, bars=6, pct=0.05):
-        score += 1; notes.append("直近急騰")
+    # 直近急騰（5m）
+    if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
+        score += 1; notes.append("5m直近急騰")
 
-    # 上ヒゲ判定（直近足）
-    last = df_5m.iloc[-1]
-    uw = upper_wick_ratio(last)
-    if uw >= WICK_RATIO_MIN and last["close"] < last["open"]:
-        score += 2; notes.append("上ヒゲ陰線")
+    # RSI過熱
+    rsi5 = rsi(df_5m["close"], 14).iloc[-1]
+    rsi15 = rsi(df_15m["close"], 14).iloc[-1]
+    if rsi5 >= RSI_OB_5M:
+        score += 2; notes.append(f"RSI5m過熱({rsi5:.1f})")
+    if rsi15 >= RSI_OB_15M:
+        score += 2; notes.append(f"RSI15m過熱({rsi15:.1f})")
 
-    # 出来高クライマックス
-    if volume_climax(df_5m["vol"], lookback=20, mult=VOLUME_CLIMAX_MULT):
-        score += 2; notes.append("出来高クライマックス")
+    # ボリンジャー上限ブレイク
+    _, upper5, _ = bollinger_bands(df_5m["close"], BB_PERIOD, BB_K)
+    if df_5m["close"].iloc[-1] > upper5.iloc[-1] * (1.0 + BB_UPPER_BREAK_PCT):
+        score += 2; notes.append("BB上限オーバー")
 
-    # RSIダイバージェンス
-    rsi5 = rsi(df_5m["close"], RSI_PERIOD)
-    if bearish_divergence(df_5m["close"], rsi5, lookback=30):
-        score += 2; notes.append("RSIベアダイバージェンス")
+    # EMA50からの正乖離
+    ema50_5 = ema(df_5m["close"], EMA_DEV_PERIOD)
+    dev_pct = (df_5m["close"].iloc[-1] / ema50_5.iloc[-1] - 1.0) * 100.0
+    if dev_pct >= EMA_DEV_MIN_PCT:
+        score += 2; notes.append(f"+{dev_pct:.1f}% 50EMA乖離")
 
-    # BOS
+    # 出来高スパイク
+    if volume_spike(df_5m["vol"], VOL_SPIKE_LOOKBACK, VOL_SPIKE_MULT):
+        score += 2; notes.append("出来高スパイク")
+
+    # 1h連続陽線
+    if count_consecutive_green(df_60m) >= CONSEC_GREEN_1H:
+        score += 1; notes.append(f"1h連続陽線≥{CONSEC_GREEN_1H}")
+
+    # 反転の芽（BOS）
     if break_of_structure_short(df_5m):
-        score += 3; notes.append("BOS下抜け")
-
-    # 15分で乖離縮小（過熱後の減速感）
-    ema_fast = ema(df_15m["close"], 8)
-    ema_slow = ema(df_15m["close"], 21)
-    if ema_fast.iloc[-1] - ema_slow.iloc[-1] < (ema_fast.iloc[-5] - ema_slow.iloc[-5]):
-        score += 1; notes.append("15m乖離縮小")
-
-    # ATH/直近高値スイープ気味か
-    current_price = df_5m["close"].iloc[-1]
-    swept, ath, recent_high = is_ath_or_recent_sweep(current_price, df_15m, df_day)
-    if swept:
-        score += 1; notes.append("ATH/直近高値スイープ")
+        score += 2; notes.append("5m BOS下抜け")
 
     return score, notes
 
+
+# ========= 取引計画 =========
+
 def plan_short_trade(df_5m: pd.DataFrame):
-    """エントリー/SL/TP計算（BOS後リターンムーブ想定）"""
     close = df_5m["close"]
     high = df_5m["high"]
-    low = df_5m["low"]
 
     swing_high = high.iloc[-5:-1].max()
-    entry = close.iloc[-1]  # 簡易に現在値成行
+    entry = close.iloc[-1]  # 現値成行
     atr_val = atr(df_5m, ATR_PERIOD).iloc[-1]
-    sl = swing_high + 0.5 * atr_val
+    sl = swing_high + SL_ATR_MULT * atr_val
     risk = abs(sl - entry)
     if risk <= 0:
-        sl = swing_high + atr_val
+        sl = swing_high + 1.0 * atr_val
         risk = abs(sl - entry)
-    tp1 = entry - 1.0 * risk
-    tp2 = entry - 2.0 * risk
+    tp1 = entry - TP1_R * risk
+    tp2 = entry - TP2_R * risk
     r_multiple = (entry - tp2) / risk if risk > 0 else 0
     return {
         "entry": round(entry, 6),
@@ -307,6 +322,7 @@ def plan_short_trade(df_5m: pd.DataFrame):
 
 
 # ========= Groq（任意の短文解説） =========
+
 def groq_commentary(symbol: str, notes: list, plan: dict) -> str:
     if not (USE_GROQ_COMMENTARY and client):
         return ""
@@ -319,9 +335,9 @@ def groq_commentary(symbol: str, notes: list, plan: dict) -> str:
         )
         res = client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[{"role": "user", "content": f"日本語で、以下を60〜120文字で簡潔に要約して: {brief}"}],
+            messages=[{"role": "user", "content": f"日本語で、以下を80〜140文字で簡潔に要約して: {brief}"}],
             temperature=0.2,
-            max_tokens=120,
+            max_tokens=140,
         )
         return res.choices[0].message.content.strip()
     except Exception as e:
@@ -330,6 +346,7 @@ def groq_commentary(symbol: str, notes: list, plan: dict) -> str:
 
 
 # ========= 通知 =========
+
 def send_short_signal(symbol: str, current_price: float, score: int, notes: list, plan: dict, change_pct: float, indicators: dict, comment: str):
     display_symbol = symbol.replace("_USDT", "")
     ind_text = "\n".join([f"- {k}: {v}" for k, v in indicators.items()]) if indicators else ""
@@ -344,8 +361,8 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
 *計画*
 - Entry: `{plan['entry']}`
 - SL: `{plan['sl']}`  (risk/qty: `{plan['risk_per_unit']}`)
-- TP1: `{plan['tp1']}` (1R)
-- TP2: `{plan['tp2']}` (2R, 到達R: {plan['r_multiple_to_tp2']})
+- TP1: `{plan['tp1']}` ({TP1_R}R)
+- TP2: `{plan['tp2']}` ({TP2_R}R, 到達R: {plan['r_multiple_to_tp2']})
 
 *参考指標*
 {ind_text}
@@ -356,6 +373,7 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
 
 
 # ========= メイン =========
+
 def run_analysis():
     top_tickers = get_top_symbols_by_24h_change()
     available = get_available_contract_symbols()
@@ -379,28 +397,25 @@ def run_analysis():
         try:
             df_5m = fetch_ohlcv(symbol, interval='5m')
             df_15m = fetch_ohlcv(symbol, interval='15m')
-            df_day = fetch_ohlcv(symbol, interval='1d')
-            if any(x is None or x.empty for x in [df_5m, df_15m, df_day]):
+            df_60m = fetch_ohlcv(symbol, interval='60m')
+            if any(x is None or x.empty for x in [df_5m, df_15m, df_60m]):
                 continue
 
-            # 前提：直近の衝動＆スイープ気味
-            swept, _, _ = is_ath_or_recent_sweep(current_price, df_15m, df_day)
-            if not (recent_impulse(df_5m, bars=6, pct=0.05) and swept):
-                continue
+            # 前提：直近の衝動が弱くても拾えるよう、条件を緩めに
+            # （過熱系シグナルの合意で拾う）
+            score, notes = score_short_setup(symbol, df_5m, df_15m, df_60m)
 
-            score, notes = score_short_setup(df_5m, df_15m, df_day)
             if score >= SCORE_THRESHOLD and break_of_structure_short(df_5m):
-                # 計画計算
                 plan = plan_short_trade(df_5m)
 
-                # 指標の一部も表示（モメンタム/ボラの把握用）
                 indicators = {
-                    "RSI(5m)": round(rsi(df_5m["close"], RSI_PERIOD).iloc[-1], 2),
+                    "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),
+                    "RSI(15m)": round(rsi(df_15m["close"], 14).iloc[-1], 2),
+                    "+乖離(5m,EMA50)": round((df_5m["close"].iloc[-1] / ema(df_5m["close"], EMA_DEV_PERIOD).iloc[-1] - 1) * 100, 2),
                     "ATR(5m)": round(atr(df_5m, ATR_PERIOD).iloc[-1], 6),
-                    "上ヒゲ比率(直近)": round(upper_wick_ratio(df_5m.iloc[-1]), 2),
+                    "出来高(5m)最新/平均": round(df_5m["vol"].iloc[-1] / max(1e-9, df_5m["vol"].rolling(VOL_SPIKE_LOOKBACK, min_periods=1).mean().iloc[-1]), 2),
                 }
 
-                # 追加の簡易コメント（任意）
                 comment = groq_commentary(symbol, notes, plan) if USE_GROQ_COMMENTARY else ""
 
                 scored.append({
@@ -410,7 +425,7 @@ def run_analysis():
                     "plan": plan,
                     "current_price": current_price,
                     "change_pct": t["change_pct"],
-                    "indicators": indicators
+                    "indicators": indicators,
                 })
         except Exception:
             send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
@@ -421,7 +436,7 @@ def run_analysis():
     for s in scored[:MAX_ALERTS_PER_RUN]:
         send_short_signal(
             s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"],
-            comment=groq_commentary(s["symbol"], s["notes"], s["plan"]) if USE_GROQ_COMMENTARY else ""
+            comment=groq_commentary(s["symbol"], s["notes"], s["plan"]) if USE_GROQ_COMMENTARY else "",
         )
         NOTIFICATION_CACHE[s["symbol"]] = now
         alerts_sent += 1
@@ -443,5 +458,4 @@ def run_analysis_route():
 
 
 if __name__ == "__main__":
-    # Render等でPORTが与えられる前提
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
