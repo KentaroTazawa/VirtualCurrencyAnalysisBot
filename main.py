@@ -442,8 +442,8 @@ def run_analysis():
         alerts_sent += 1
         time.sleep(1)
 
-    if alerts_sent == 0:
-        tg_send_md("_今回は条件を満たすショート候補はありませんでした。_")
+    #if alerts_sent == 0:
+        #tg_send_md("_今回は条件を満たすショート候補はありませんでした。_")
 
 
 @app.route("/")
