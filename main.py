@@ -352,17 +352,27 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
     ind_text = "\n".join([f"- {k}: {v}" for k, v in indicators.items()]) if indicators else ""
     notes_text = ", ".join(notes)
 
+    entry = plan['entry']
+    sl = plan['sl']
+    tp1 = plan['tp1']
+    tp2 = plan['tp2']
+
+    # %計算
+    sl_pct = (sl - entry) / entry * 100
+    tp1_pct = (tp1 - entry) / entry * 100
+    tp2_pct = (tp2 - entry) / entry * 100
+
     text = f"""*📉 ショート候補: {display_symbol}*
 24h変化率: {change_pct:.2f}%  / 現値: {current_price}
 
 *スコア:* {score} / 必要 {SCORE_THRESHOLD}
 *根拠:* {notes_text}
 
-*計画*
-- Entry: `{plan['entry']}`
-- SL: `{plan['sl']}`  (risk/qty: `{plan['risk_per_unit']}`)
-- TP1: `{plan['tp1']}` ({TP1_R}R)
-- TP2: `{plan['tp2']}` ({TP2_R}R, 到達R: {plan['r_multiple_to_tp2']})
+*計画 (%表記)*
+- Entry: `{entry}`
+- SL: `{sl_pct:+.2f}%`  (risk/qty: `{plan['risk_per_unit']}`)
+- TP1: `{tp1_pct:+.2f}%` ({TP1_R}R)
+- TP2: `{tp2_pct:+.2f}%` ({TP2_R}R, 到達R: {plan['r_multiple_to_tp2']})
 
 *参考指標*
 {ind_text}
