@@ -41,7 +41,7 @@ IMPULSE_PCT_5M = 0.04             # 直近急騰の最低合計上昇率(4%)
 CONSEC_GREEN_1H = 3               # 1h連続陽線本数
 
 # スコア
-SCORE_THRESHOLD = 4               # 通知に必要な合計スコア（緩め）
+SCORE_THRESHOLD = 5               # 通知に必要な合計スコア（緩め）
 
 # 利確・損切り（固定R管理）
 ATR_PERIOD = 14
