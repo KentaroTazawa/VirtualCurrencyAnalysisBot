@@ -477,13 +477,9 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
 根拠: {notes_text}
 
 計画 (%表記)
-
 Entry: {entry}
-
 SL: {sl_pct:+.2f}%  (risk/qty: {plan['risk_per_unit']})
-
 TP1: {tp1_pct:+.2f}% ({TP1_R}R)
-
 TP2: {tp2_pct:+.2f}% ({TP2_R}R, 到達R: {plan['r_multiple_to_tp2']})
 
 参考指標
@@ -550,24 +546,33 @@ def run_analysis():
         try:
             entry = s["plan"]["entry"]
             tp2_pct = (s["plan"]["tp2"] - entry) / entry * 100.0
+            print(f"⚠️ log01")
             if s["score"] >= AUTO_ORDER_MIN_SCORE and abs(tp2_pct) >= AUTO_ORDER_MIN_TP_PCT:
                 # 自動注文を試みる
                 # 1) 残高取得 -> notional
+                print(f"⚠️ log02")
                 balance = get_usdt_asset()
+                print(f"⚠️ log03")
                 if balance is None:
+                    print(f"⚠️ log04")
                     tg_send_md(f"自動注文失敗: 残高取得できませんでした: {s['symbol']}")
                 else:
+                    print(f"⚠️ log05")
                     notional = balance * AUTO_ORDER_ASSET_PCT
                     vol, err = calculate_volume_for_notional(s["symbol"], entry, notional)
                     if err:
+                        print(f"⚠️ log06")
                         tg_send_md(f"自動注文失敗: ボリューム計算失敗 {s['symbol']}: {err}")
                     else:
+                        print(f"⚠️ log07")
                         success, resp = place_market_short_order(s["symbol"], entry, vol, leverage=AUTO_ORDER_LEVERAGE,
                                                                  tp_pct=AUTO_ORDER_TAKE_PROFIT_PCT, sl_pct=AUTO_ORDER_STOP_LOSS_PCT)
                         if success:
+                            print(f"⚠️ log08")
                             order_id = resp.get("data") or resp.get("orderId") or resp
                             tg_send_md(f"✅ 自動ショート注文 成功\n銘柄: {s['symbol']}\nvol: {vol}\nleverage: {AUTO_ORDER_LEVERAGE}\n注文ID: {order_id}")
                         else:
+                            print(f"⚠️ log09")
                             # 注文失敗: 理由通知
                             err_msg = resp
                             tg_send_md(f"❌ 自動ショート注文 失敗\n銘柄: {s['symbol']}\nreason: {json.dumps(err_msg, ensure_ascii=False)[:1500]}")
