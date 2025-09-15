@@ -560,14 +560,14 @@ def run_analysis():
                 print(f"⚠️ log03")
                 if balance is None:
                     print(f"⚠️ log04")
-                    tg_send_md(f"自動注文失敗: 残高取得できませんでした: {s['symbol']}")
+                    print(f"自動注文失敗: 残高取得できませんでした: {s['symbol']}")
                 else:
                     print(f"⚠️ log05")
                     notional = balance * AUTO_ORDER_ASSET_PCT
                     vol, err = calculate_volume_for_notional(s["symbol"], entry, notional)
                     if err:
                         print(f"⚠️ log06")
-                        tg_send_md(f"自動注文失敗: ボリューム計算失敗 {s['symbol']}: {err}")
+                        print(f"自動注文失敗: ボリューム計算失敗 {s['symbol']}: {err}")
                     else:
                         print(f"⚠️ log07")
                         success, resp = place_market_short_order(s["symbol"], entry, vol, leverage=AUTO_ORDER_LEVERAGE,
@@ -575,12 +575,12 @@ def run_analysis():
                         if success:
                             print(f"⚠️ log08")
                             order_id = resp.get("data") or resp.get("orderId") or resp
-                            tg_send_md(f"✅ 自動ショート注文 成功\n銘柄: {s['symbol']}\nvol: {vol}\nleverage: {AUTO_ORDER_LEVERAGE}\n注文ID: {order_id}")
+                            print(f"✅ 自動ショート注文 成功\n銘柄: {s['symbol']}\nvol: {vol}\nleverage: {AUTO_ORDER_LEVERAGE}\n注文ID: {order_id}")
                         else:
                             print(f"⚠️ log09")
                             # 注文失敗: 理由通知
                             err_msg = resp
-                            tg_send_md(f"❌ 自動ショート注文 失敗\n銘柄: {s['symbol']}\nreason: {json.dumps(err_msg, ensure_ascii=False)[:1500]}")
+                            print(f"❌ 自動ショート注文 失敗\n銘柄: {s['symbol']}\nreason: {json.dumps(err_msg, ensure_ascii=False)[:1500]}")
         except Exception:
             send_error_to_telegram(f"自動注文処理で例外:\n{traceback.format_exc()}")
         time.sleep(1)
