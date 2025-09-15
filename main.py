@@ -104,8 +104,10 @@ def tg_send_md(text: str):
         "parse_mode": "Markdown",
         "disable_web_page_preview": True,
     }
+    print(f"⚠️ log0001")
     try:
         requests.post(url, data=payload, timeout=10)
+        print(f"⚠️ log0002")
     except requests.exceptions.Timeout:
         send_error_to_telegram("Telegram送信エラー: タイムアウト発生")
     except Exception as e:
@@ -430,6 +432,7 @@ def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage
     take-profit は entry*(1 - tp_pct/100)
     stop-loss は entry*(1 + sl_pct/100)  （ショートのため）
     """
+    print(f"⚠️ log001")
     if not MEXC_API_KEY or not MEXC_API_SECRET:
         return False, {"error": "MEXC API key/secret not set in env."}
     detail = get_contract_detail(symbol) or {}
@@ -450,7 +453,9 @@ def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage
         "takeProfitPrice": tp_price,
     }
     try:
+        print(f"⚠️ log002")
         resp = mexc_private_post("/api/v1/private/order/submit", body=body)
+        print(f"⚠️ log003")
         # レスポンス例は success=true, data=orderId
         success = bool(resp.get("success") is True or resp.get("code") == 0)
         return success, resp
