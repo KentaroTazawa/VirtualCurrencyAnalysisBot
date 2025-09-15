@@ -437,13 +437,11 @@ def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage
         return False, {"error": "MEXC API key/secret not set in env."}
     detail = get_contract_detail(symbol) or {}
     price_scale = int(detail.get("priceScale", 6) or 6)
-    # price for market: set to current entry rounded
-    price_val = round(entry_price, price_scale)
+    # market注文のため price は送らない
     tp_price = round(entry_price * (1.0 - tp_pct / 100.0), price_scale)
     sl_price = round(entry_price * (1.0 + sl_pct / 100.0), price_scale)
     body = {
         "symbol": symbol,
-        "price": price_val,
         "vol": vol,
         "leverage": int(leverage),
         "side": 3,         # open short
@@ -452,6 +450,14 @@ def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage
         "stopLossPrice": sl_price,
         "takeProfitPrice": tp_price,
     }
+    try:
+        print(f"⚠️ log002")
+        resp = mexc_private_post("/api/v1/private/order/submit", body=body)
+        print(f"⚠️ log003")
+        success = bool(resp.get("success") is True or resp.get("code") == 0)
+        return success, resp
+    except Exception as e:
+        return False, {"error": str(e)}
     try:
         print(f"⚠️ log002")
         resp = mexc_private_post("/api/v1/private/order/submit", body=body)
