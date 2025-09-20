@@ -82,6 +82,20 @@ def mexc_get(path: str, timeout=10, params=None):
     res.raise_for_status()
     return res.json()
 
+
+
+def get_server_time(timeout=5):
+    """Get server time (milliseconds) from contract ping. Return int ms or None."""
+    try:
+        resp = mexc_get("/api/v1/contract/ping", timeout=timeout)
+        if isinstance(resp, dict):
+            data = resp.get("data")
+            if isinstance(data, int) or isinstance(data, float):
+                return int(data)
+        return None
+    except Exception:
+        return None
+
 def send_error_to_telegram(error_message: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -133,7 +147,9 @@ def mexc_private_get(path: str, params: dict = None, timeout=15):
     if not MEXC_API_KEY or not MEXC_API_SECRET:
         raise RuntimeError("MEXC API keys not configured (MEXC_API_KEY/MEXC_API_SECRET).")
     url = f"{MEXC_BASE_URL}{path}"
-    req_time = str(int(time.time() * 1000))
+    # Use server time for Request-Time to avoid small clock skews
+    server_ts = get_server_time() or int(time.time() * 1000)
+    req_time = str(int(server_ts))
     param_string = _build_query_string(params) if params else ""
     signature = _sign_message(MEXC_API_KEY, MEXC_API_SECRET, req_time, param_string)
     headers = {
@@ -142,17 +158,26 @@ def mexc_private_get(path: str, params: dict = None, timeout=15):
         "Signature": signature,
         "Content-Type": "application/json",
     }
-    r = requests.get(url, headers=headers, params=params, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.ReadTimeout as e:
+        send_error_to_telegram(f"MEXC GET timeout: {path}. Exception: {str(e)}")
+        raise
+    except Exception as e:
+        send_error_to_telegram(f"MEXC GET error: {path}\n{str(e)}")
+        raise
 
 def mexc_private_post(path: str, body: dict = None, timeout=15):
     if not MEXC_API_KEY or not MEXC_API_SECRET:
         raise RuntimeError("MEXC API keys not configured (MEXC_API_KEY/MEXC_API_SECRET).")
     url = f"{MEXC_BASE_URL}{path}"
-    req_time = str(int(time.time() * 1000))
+    # Use server time for Request-Time to avoid small clock skews
+    server_ts = get_server_time() or int(time.time() * 1000)
+    req_time = str(int(server_ts))
     # POST の場合は JSON 文字列をそのまま署名に使う（docs に合わせ、余計な空白は抑える）
-    param_string = json.dumps(body, separators=(",", ":"), ensure_ascii=False) if body else ""
+    param_string = json.dumps(body, separators=(',', ':'), ensure_ascii=False) if body else ""
     signature = _sign_message(MEXC_API_KEY, MEXC_API_SECRET, req_time, param_string)
     headers = {
         "ApiKey": MEXC_API_KEY,
@@ -160,9 +185,23 @@ def mexc_private_post(path: str, body: dict = None, timeout=15):
         "Signature": signature,
         "Content-Type": "application/json",
     }
-    r = requests.post(url, headers=headers, data=param_string.encode("utf-8"), timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    # optional recv-window header (set via env MEXC_RECV_WINDOW in milliseconds)
+    try:
+        recv_window = os.getenv("MEXC_RECV_WINDOW")
+        if recv_window:
+            headers["Recv-Window"] = str(int(recv_window))
+    except Exception:
+        pass
+    try:
+        r = requests.post(url, headers=headers, data=param_string.encode("utf-8"), timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.ReadTimeout as e:
+        send_error_to_telegram(f"MEXC POST timeout: {path}. The order endpoint may be under maintenance or unreachable. Exception: {str(e)}")
+        raise
+    except Exception as e:
+        send_error_to_telegram(f"MEXC POST error: {path}\n{str(e)}")
+        raise
 
 # ========= データ取得 =========
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
@@ -432,16 +471,25 @@ def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage
     take-profit は entry*(1 - tp_pct/100)
     stop-loss は entry*(1 + sl_pct/100)  （ショートのため）
     """
+    # pre-flight: check contract ping (endpoint reachability)
+    ping = get_server_time()
+    if not ping:
+        err = {"error": "contract ping failed or /api/v1/contract/ping unreachable (order endpoint may be under maintenance)"}
+        send_error_to_telegram(f"自動注文前チェック失敗: {symbol} - contract ping unreachable")
+        return False, err
+
     print(f"⚠️ log001")
     if not MEXC_API_KEY or not MEXC_API_SECRET:
         return False, {"error": "MEXC API key/secret not set in env."}
     detail = get_contract_detail(symbol) or {}
     price_scale = int(detail.get("priceScale", 6) or 6)
-    # market注文のため price は送らない
+    # price for market: set to current entry rounded
+    price_val = round(entry_price, price_scale)
     tp_price = round(entry_price * (1.0 - tp_pct / 100.0), price_scale)
     sl_price = round(entry_price * (1.0 + sl_pct / 100.0), price_scale)
     body = {
         "symbol": symbol,
+        "price": price_val,
         "vol": vol,
         "leverage": int(leverage),
         "side": 3,         # open short
@@ -450,14 +498,6 @@ def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage
         "stopLossPrice": sl_price,
         "takeProfitPrice": tp_price,
     }
-    try:
-        print(f"⚠️ log002")
-        resp = mexc_private_post("/api/v1/private/order/submit", body=body)
-        print(f"⚠️ log003")
-        success = bool(resp.get("success") is True or resp.get("code") == 0)
-        return success, resp
-    except Exception as e:
-        return False, {"error": str(e)}
     try:
         print(f"⚠️ log002")
         resp = mexc_private_post("/api/v1/private/order/submit", body=body)
