@@ -206,7 +206,13 @@ def get_available_contract_symbols():
     try:
         data = mexc_get("/api/v1/contract/detail")
         arr = data.get("data", []) or []
-        return {it.get("symbol") for it in arr if it.get("symbol")}
+        available = set()
+        for it in arr:
+            symbol = it.get("symbol")
+            state = it.get("state", 0)  # 0 = 正常稼働
+            if symbol and state == 0:
+                available.add(symbol)
+        return available
     except Exception as e:
         send_error_to_telegram(f"先物銘柄一覧取得失敗:\n{str(e)}")
         return set()
