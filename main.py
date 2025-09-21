@@ -7,6 +7,8 @@ import hashlib
 import math
 from datetime import datetime, timedelta
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import pandas as pd
 from flask import Flask
 from dotenv import load_dotenv
@@ -31,6 +33,20 @@ except Exception:
     client = None
 
 app = Flask(__name__)
+
+# --- HTTP session with retries and keep-alive ---
+session = requests.Session()
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=0.5,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=frozenset(["GET", "POST", "PUT", "DELETE", "HEAD"])
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
+session.headers.update({"User-Agent": "mexc-bot/1.0"})
+
 
 # ====== 運用パラメータ（緩めにして機会を増やす） ======
 TOP_SYMBOLS_LIMIT = 40
@@ -78,34 +94,21 @@ NOTIFICATION_CACHE = {}  # {symbol: last_notified_timestamp}
 # ========= ユーティリティ =========
 def mexc_get(path: str, timeout=10, params=None):
     url = f"{MEXC_BASE_URL}{path}"
-    res = requests.get(url, timeout=timeout, params=params)
+    # use session with retries; timeout=(connect, read)
+    res = session.get(url, timeout=(5, max(30, timeout)), params=params)
     res.raise_for_status()
     return res.json()
-
-
-
-def get_server_time(timeout=5):
-    """Get server time (milliseconds) from contract ping. Return int ms or None."""
-    try:
-        resp = mexc_get("/api/v1/contract/ping", timeout=timeout)
-        if isinstance(resp, dict):
-            data = resp.get("data")
-            if isinstance(data, int) or isinstance(data, float):
-                return int(data)
-        return None
-    except Exception:
-        return None
 
 def send_error_to_telegram(error_message: str):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(
+        session.post(
             url,
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": f"⚠️ エラー発生:\n\n{error_message[:3800]}",
             },
-            timeout=10,
+            timeout=(5, 10),
         )
     except Exception:
         pass
@@ -120,7 +123,7 @@ def tg_send_md(text: str):
     }
     print(f"⚠️ log0001")
     try:
-        requests.post(url, data=payload, timeout=10)
+        session.post(url, data=payload, timeout=(5, 10))
         print(f"⚠️ log0002")
     except requests.exceptions.Timeout:
         send_error_to_telegram("Telegram送信エラー: タイムアウト発生")
@@ -147,9 +150,7 @@ def mexc_private_get(path: str, params: dict = None, timeout=15):
     if not MEXC_API_KEY or not MEXC_API_SECRET:
         raise RuntimeError("MEXC API keys not configured (MEXC_API_KEY/MEXC_API_SECRET).")
     url = f"{MEXC_BASE_URL}{path}"
-    # Use server time for Request-Time to avoid small clock skews
-    server_ts = get_server_time() or int(time.time() * 1000)
-    req_time = str(int(server_ts))
+    req_time = str(int(time.time() * 1000))
     param_string = _build_query_string(params) if params else ""
     signature = _sign_message(MEXC_API_KEY, MEXC_API_SECRET, req_time, param_string)
     headers = {
@@ -158,26 +159,17 @@ def mexc_private_get(path: str, params: dict = None, timeout=15):
         "Signature": signature,
         "Content-Type": "application/json",
     }
-    try:
-        r = requests.get(url, headers=headers, params=params, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except requests.exceptions.ReadTimeout as e:
-        send_error_to_telegram(f"MEXC GET timeout: {path}. Exception: {str(e)}")
-        raise
-    except Exception as e:
-        send_error_to_telegram(f"MEXC GET error: {path}\n{str(e)}")
-        raise
+    r = session.get(url, headers=headers, params=params, timeout=(5, max(30, timeout)))
+    r.raise_for_status()
+    return r.json()
 
 def mexc_private_post(path: str, body: dict = None, timeout=15):
     if not MEXC_API_KEY or not MEXC_API_SECRET:
         raise RuntimeError("MEXC API keys not configured (MEXC_API_KEY/MEXC_API_SECRET).")
     url = f"{MEXC_BASE_URL}{path}"
-    # Use server time for Request-Time to avoid small clock skews
-    server_ts = get_server_time() or int(time.time() * 1000)
-    req_time = str(int(server_ts))
+    req_time = str(int(time.time() * 1000))
     # POST の場合は JSON 文字列をそのまま署名に使う（docs に合わせ、余計な空白は抑える）
-    param_string = json.dumps(body, separators=(',', ':'), ensure_ascii=False) if body else ""
+    param_string = json.dumps(body, separators=(",", ":"), ensure_ascii=False) if body else ""
     signature = _sign_message(MEXC_API_KEY, MEXC_API_SECRET, req_time, param_string)
     headers = {
         "ApiKey": MEXC_API_KEY,
@@ -185,23 +177,9 @@ def mexc_private_post(path: str, body: dict = None, timeout=15):
         "Signature": signature,
         "Content-Type": "application/json",
     }
-    # optional recv-window header (set via env MEXC_RECV_WINDOW in milliseconds)
-    try:
-        recv_window = os.getenv("MEXC_RECV_WINDOW")
-        if recv_window:
-            headers["Recv-Window"] = str(int(recv_window))
-    except Exception:
-        pass
-    try:
-        r = requests.post(url, headers=headers, data=param_string.encode("utf-8"), timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except requests.exceptions.ReadTimeout as e:
-        send_error_to_telegram(f"MEXC POST timeout: {path}. The order endpoint may be under maintenance or unreachable. Exception: {str(e)}")
-        raise
-    except Exception as e:
-        send_error_to_telegram(f"MEXC POST error: {path}\n{str(e)}")
-        raise
+    r = session.post(url, headers=headers, data=param_string.encode("utf-8"), timeout=(5, max(30, timeout)))
+    r.raise_for_status()
+    return r.json()
 
 # ========= データ取得 =========
 def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
@@ -471,13 +449,6 @@ def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage
     take-profit は entry*(1 - tp_pct/100)
     stop-loss は entry*(1 + sl_pct/100)  （ショートのため）
     """
-    # pre-flight: check contract ping (endpoint reachability)
-    ping = get_server_time()
-    if not ping:
-        err = {"error": "contract ping failed or /api/v1/contract/ping unreachable (order endpoint may be under maintenance)"}
-        send_error_to_telegram(f"自動注文前チェック失敗: {symbol} - contract ping unreachable")
-        return False, err
-
     print(f"⚠️ log001")
     if not MEXC_API_KEY or not MEXC_API_SECRET:
         return False, {"error": "MEXC API key/secret not set in env."}
