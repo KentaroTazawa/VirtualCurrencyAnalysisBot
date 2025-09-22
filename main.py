@@ -448,39 +448,68 @@ def calculate_volume_for_notional(symbol: str, price: float, notional_usdt: floa
         vol = int(max(1, math.floor(raw_vol)))
     return int(vol), None
 
-def test_order_placeable(symbol: str, entry_price: float, vol: int, leverage: int = 1) -> bool:
-    """
-    テスト注文で下単可能か確認する
-    """
-    detail = get_contract_detail(symbol) or {}
-    price_scale = int(detail.get("priceScale", 6) or 6)
-    price_val = round(entry_price, price_scale)
-    body = {
-        "symbol": symbol,
-        "price": price_val,
-        "vol": vol,
-        "leverage": int(leverage),
-        "side": 3,
-        "type": 5,
-        "openType": 1,
+# ====== 修正: 通知系関数の統一 ======
+def send_message_to_telegram(text: str, markdown: bool = True):
+    """通常メッセージ通知"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram設定未了:", text)
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
     }
+    if markdown:
+        payload["parse_mode"] = "Markdown"
     try:
-        resp = mexc_private_post("/api/v1/private/order/test", body=body)
-        return bool(resp.get("success") is True or resp.get("code") == 0)
+        session.post(url, json=payload, timeout=(5, 10))
     except Exception as e:
-        send_error_to_telegram(f"テスト注文エラー {symbol}:\n{str(e)}")
-        return False
+        print(f"Telegram送信失敗: {e}")
 
+
+# ====== 修正: test_order_placeable をバリデーション関数にする ======
+def validate_order(symbol: str, entry_price: float, vol: int, leverage: int = 1) -> (bool, str):
+    """
+    注文可能かをテストする（実際の test endpoint を使わず、契約条件・残高などでチェック）
+    戻り値: (可能か, エラー理由 or 空文字)
+    """
+    detail = get_contract_detail(symbol)
+    if not detail:
+        return False, "契約情報取得できず"
+    # price scale チェック
+    price_scale = int(detail.get("priceScale", 6) or 6)
+    # 最小価格単位のチェック
+    rounded = round(entry_price, price_scale)
+    if abs(rounded - entry_price) > (10 ** (-price_scale)):
+        return False, f"価格刻みが priceScale({price_scale}) に合わない: {entry_price} -> {rounded}"
+    # vol 単位チェック
+    min_vol = float(detail.get("minVol", 1.0) or 1.0)
+    vol_unit = int(detail.get("volUnit", 1) or 1)
+    if vol < min_vol:
+        return False, f"vol({vol})が最小vol({min_vol})未満"
+    if vol % vol_unit != 0:
+        return False, f"vol単位({vol_unit})に合わない: vol={vol}"
+    # 残高チェック
+    balance = get_usdt_asset()
+    if balance is None:
+        return False, "残高取得失敗"
+    notional = entry_price * vol * float(detail.get("contractSize",1.0))
+    if notional > balance:
+        return False, f"notional({notional:.4f})が獲得可能残高({balance:.4f})を超過"
+    return True, ""
+
+# ====== 修正: place_market_short_order 内で validate_order を使う ======
 def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage: int = 1,
                              tp_pct: float = AUTO_ORDER_TAKE_PROFIT_PCT, sl_pct: float = AUTO_ORDER_STOP_LOSS_PCT):
     if not MEXC_API_KEY or not MEXC_API_SECRET:
         return False, {"error": "MEXC API key/secret not set in env."}
 
-    # まずテスト注文で可能か確認
-    if not test_order_placeable(symbol, entry_price, vol, leverage):
-        msg = f"❌ テスト注文失敗\n銘柄: {symbol}\n取引不可"
+    # Validate before real order
+    ok, reason = validate_order(symbol, entry_price, vol, leverage)
+    if not ok:
+        msg = f"❌ 注文前バリデーション失敗\n銘柄: {symbol}\n理由: {reason}"
         send_message_to_telegram(msg)
-        return False, {"error": "contract not placeable"}
+        return False, {"error": f"validation failed: {reason}"}
 
     detail = get_contract_detail(symbol) or {}
     price_scale = int(detail.get("priceScale", 6) or 6)
@@ -491,8 +520,8 @@ def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage
         "symbol": symbol,
         "vol": vol,
         "leverage": int(leverage),
-        "side": 3,
-        "type": 5,
+        "side": 3,  # ショート
+        "type": 5,  # 成行? 注文タイプ確認が必要
         "openType": 1,
         "stopLossPrice": sl_price,
         "takeProfitPrice": tp_price,
@@ -502,17 +531,19 @@ def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage
         success = bool(resp.get("success") is True or resp.get("code") == 0)
 
         if success:
-            order_id = resp.get("data", {}).get("orderId", "N/A")
+            order_data = resp.get("data", {})
+            order_id = order_data.get("orderId", order_data.get("order_id", "N/A"))
             msg = (f"✅ 自動ショート注文 成功\n"
                    f"銘柄: {symbol}\n"
                    f"vol: {vol}\n"
-                   f"leverage: {AUTO_ORDER_LEVERAGE}\n"
+                   f"leverage: {leverage}\n"
                    f"注文ID: {order_id}")
             send_message_to_telegram(msg)
         else:
+            # エラー理由をメッセージに含める
             msg = (f"❌ 自動ショート注文 失敗\n"
                    f"銘柄: {symbol}\n"
-                   f"理由: {resp}")
+                   f"レスポンス: {resp}")
             send_message_to_telegram(msg)
 
         return success, resp
