@@ -448,43 +448,79 @@ def calculate_volume_for_notional(symbol: str, price: float, notional_usdt: floa
         vol = int(max(1, math.floor(raw_vol)))
     return int(vol), None
 
-def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage: int = 1,
-                             tp_pct: float = AUTO_ORDER_TAKE_PROFIT_PCT, sl_pct: float = AUTO_ORDER_STOP_LOSS_PCT):
+def test_order_placeable(symbol: str, entry_price: float, vol: int, leverage: int = 1) -> bool:
     """
-    注文: market open short (side=3, type=5)
-    take-profit は entry*(1 - tp_pct/100)
-    stop-loss は entry*(1 + sl_pct/100)  （ショートのため）
+    テスト注文で下単可能か確認する
     """
-    print(f"⚠️ log001")
-    if not MEXC_API_KEY or not MEXC_API_SECRET:
-        return False, {"error": "MEXC API key/secret not set in env."}
     detail = get_contract_detail(symbol) or {}
     price_scale = int(detail.get("priceScale", 6) or 6)
-    # price for market: set to current entry rounded
     price_val = round(entry_price, price_scale)
-    tp_price = round(entry_price * (1.0 - tp_pct / 100.0), price_scale)
-    sl_price = round(entry_price * (1.0 + sl_pct / 100.0), price_scale)
     body = {
         "symbol": symbol,
         "price": price_val,
         "vol": vol,
         "leverage": int(leverage),
-        "side": 3,         # open short
-        "type": 5,         # market order
-        "openType": 1,     # isolated
+        "side": 3,
+        "type": 5,
+        "openType": 1,
+    }
+    try:
+        resp = mexc_private_post("/api/v1/private/order/test", body=body)
+        return bool(resp.get("success") is True or resp.get("code") == 0)
+    except Exception as e:
+        send_error_to_telegram(f"テスト注文エラー {symbol}:\n{str(e)}")
+        return False
+
+def place_market_short_order(symbol: str, entry_price: float, vol: int, leverage: int = 1,
+                             tp_pct: float = AUTO_ORDER_TAKE_PROFIT_PCT, sl_pct: float = AUTO_ORDER_STOP_LOSS_PCT):
+    if not MEXC_API_KEY or not MEXC_API_SECRET:
+        return False, {"error": "MEXC API key/secret not set in env."}
+
+    # まずテスト注文で可能か確認
+    if not test_order_placeable(symbol, entry_price, vol, leverage):
+        msg = f"❌ テスト注文失敗\n銘柄: {symbol}\n取引不可"
+        send_message_to_telegram(msg)
+        return False, {"error": "contract not placeable"}
+
+    detail = get_contract_detail(symbol) or {}
+    price_scale = int(detail.get("priceScale", 6) or 6)
+    tp_price = round(entry_price * (1.0 - tp_pct / 100.0), price_scale)
+    sl_price = round(entry_price * (1.0 + sl_pct / 100.0), price_scale)
+
+    body = {
+        "symbol": symbol,
+        "vol": vol,
+        "leverage": int(leverage),
+        "side": 3,
+        "type": 5,
+        "openType": 1,
         "stopLossPrice": sl_price,
         "takeProfitPrice": tp_price,
     }
     try:
-        print(f"⚠️ log002")
         resp = mexc_private_post("/api/v1/private/order/submit", body=body)
-        print(f"⚠️ log003")
-        # レスポンス例は success=true, data=orderId
         success = bool(resp.get("success") is True or resp.get("code") == 0)
+
+        if success:
+            order_id = resp.get("data", {}).get("orderId", "N/A")
+            msg = (f"✅ 自動ショート注文 成功\n"
+                   f"銘柄: {symbol}\n"
+                   f"vol: {vol}\n"
+                   f"leverage: {AUTO_ORDER_LEVERAGE}\n"
+                   f"注文ID: {order_id}")
+            send_message_to_telegram(msg)
+        else:
+            msg = (f"❌ 自動ショート注文 失敗\n"
+                   f"銘柄: {symbol}\n"
+                   f"理由: {resp}")
+            send_message_to_telegram(msg)
+
         return success, resp
     except Exception as e:
+        msg = f"❌ 自動ショート注文 例外発生\n銘柄: {symbol}\nエラー: {str(e)}"
+        send_message_to_telegram(msg)
         return False, {"error": str(e)}
-
+        
 # ========= 通知 =========
 def send_short_signal(symbol: str, current_price: float, score: int, notes: list, plan: dict, change_pct: float, indicators: dict, comment: str):
     display_symbol = symbol.replace("_USDT", "")
@@ -574,33 +610,24 @@ def run_analysis():
         try:
             entry = s["plan"]["entry"]
             tp2_pct = (s["plan"]["tp2"] - entry) / entry * 100.0
-            print(f"⚠️ log01")
             if s["score"] >= AUTO_ORDER_MIN_SCORE and abs(tp2_pct) >= AUTO_ORDER_MIN_TP_PCT:
                 # 自動注文を試みる
                 # 1) 残高取得 -> notional
-                print(f"⚠️ log02")
                 balance = get_usdt_asset()
-                print(f"⚠️ log03")
                 if balance is None:
-                    print(f"⚠️ log04")
                     print(f"自動注文失敗: 残高取得できませんでした: {s['symbol']}")
                 else:
-                    print(f"⚠️ log05")
                     notional = balance * AUTO_ORDER_ASSET_PCT
                     vol, err = calculate_volume_for_notional(s["symbol"], entry, notional)
                     if err:
-                        print(f"⚠️ log06")
                         print(f"自動注文失敗: ボリューム計算失敗 {s['symbol']}: {err}")
                     else:
-                        print(f"⚠️ log07")
                         success, resp = place_market_short_order(s["symbol"], entry, vol, leverage=AUTO_ORDER_LEVERAGE,
                                                                  tp_pct=AUTO_ORDER_TAKE_PROFIT_PCT, sl_pct=AUTO_ORDER_STOP_LOSS_PCT)
                         if success:
-                            print(f"⚠️ log08")
                             order_id = resp.get("data") or resp.get("orderId") or resp
                             print(f"✅ 自動ショート注文 成功\n銘柄: {s['symbol']}\nvol: {vol}\nleverage: {AUTO_ORDER_LEVERAGE}\n注文ID: {order_id}")
                         else:
-                            print(f"⚠️ log09")
                             # 注文失敗: 理由通知
                             err_msg = resp
                             print(f"❌ 自動ショート注文 失敗\n銘柄: {s['symbol']}\nreason: {json.dumps(err_msg, ensure_ascii=False)[:1500]}")
