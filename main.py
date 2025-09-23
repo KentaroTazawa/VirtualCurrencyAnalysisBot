@@ -415,12 +415,13 @@ def get_contract_detail(symbol: str):
 
 def get_usdt_asset():
     try:
-        resp = mexc_private_get("/api/v1/private/account/asset/USDT")
-        d = resp.get("data") or {}
-        return float(d.get("availableBalance", 0.0))
+        resp = mexc_private_get("/api/v1/private/account/assets", {"currency": "USDT"})
+        if isinstance(resp, list) and len(resp) > 0:
+            return float(resp[0].get("availableBalance", 0.0))
+        return 0.0
     except Exception as e:
         send_error_to_telegram(f"アセット取得失敗:\n{str(e)}")
-        return None
+        return 0.0
 
 def calculate_volume_for_notional(symbol: str, price: float, notional_usdt: float):
     """
