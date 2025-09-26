@@ -313,6 +313,12 @@ def run_analysis():
 
         for item in sorted_symbols:
             symbol = item.get("symbol")
+
+            # 過去1時間以内に注文済みかチェック
+            last_ts = NOTIFICATION_CACHE.get(symbol)
+            if last_ts and time.time() - last_ts < 3600:
+                continue
+
             df = fetch_ohlcv(symbol, "1m", 200)
             if df is None or len(df) < 50:
                 continue
@@ -322,10 +328,6 @@ def run_analysis():
                 continue
 
             plan = plan_short_trade(df)
-            cache_key = f"{symbol}-{int(df['time'].iloc[-1].timestamp())}"
-            if cache_key in NOTIFICATION_CACHE:
-                continue
-            NOTIFICATION_CACHE[cache_key] = True
 
             vol, err = calculate_volume_for_notional(symbol, plan["entry"], AUTO_ORDER_NOTIONAL)
             if err:
@@ -342,12 +344,14 @@ def run_analysis():
                 if err:
                     send_error_to_telegram(f"{symbol} 注文失敗: {err}")
                     continue
+                # 注文成功時にキャッシュ更新（現在時刻を記録）
+                NOTIFICATION_CACHE[symbol] = time.time()
 
             send_short_signal(symbol, score, signals, plan, vol, order_id)
 
     except Exception as e:
         send_error_to_telegram(f"run_analysis失敗:\n{traceback.format_exc()}")
-
+        
 # =====================
 # Flaskエンドポイント
 # =====================
