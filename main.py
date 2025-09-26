@@ -26,8 +26,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RUN_SECRET = os.getenv("RUN_SECRET")
 
 AUTO_ORDER_ENABLE = os.getenv("AUTO_ORDER_ENABLE", "false").lower() == "true"
-AUTO_ORDER_NOTIONAL = float(os.getenv("AUTO_ORDER_NOTIONAL", "50"))
-AUTO_ORDER_LEVERAGE = int(os.getenv("AUTO_ORDER_LEVERAGE", "10"))
+AUTO_ORDER_NOTIONAL = float(os.getenv("AUTO_ORDER_NOTIONAL", "10"))
+AUTO_ORDER_LEVERAGE = int(os.getenv("AUTO_ORDER_LEVERAGE", "1"))
 
 # Flask
 app = Flask(__name__)
