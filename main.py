@@ -121,10 +121,8 @@ def tg_send_md(text: str):
         "parse_mode": "Markdown",
         "disable_web_page_preview": True,
     }
-    print(f"⚠️ log0001")
     try:
         session.post(url, data=payload, timeout=(5, 10))
-        print(f"⚠️ log0002")
     except requests.exceptions.Timeout:
         send_error_to_telegram("Telegram送信エラー: タイムアウト発生")
     except Exception as e:
