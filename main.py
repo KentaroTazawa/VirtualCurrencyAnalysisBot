@@ -416,9 +416,16 @@ def get_contract_detail(symbol: str):
 def get_usdt_asset():
     try:
         resp = mexc_private_get("/api/v1/private/account/assets", {"currency": "USDT"})
-        if isinstance(resp, list) and len(resp) > 0:
-            return float(resp[0].get("availableBalance", 0.0))
-        return 0.0
+        if not resp or "data" not in resp:
+            send_error_to_telegram(f"残高取得失敗: {resp}")
+            return 0.0
+        # data はリストなので USDT を抽出
+        assets = resp["data"]
+        usdt_info = next((x for x in assets if x.get("currency") == "USDT"), None)
+        if not usdt_info:
+            send_error_to_telegram(f"USDT残高が見つかりません: {assets}")
+            return 0.0
+        return float(usdt_info.get("availableBalance", 0.0))
     except Exception as e:
         send_error_to_telegram(f"アセット取得失敗:\n{str(e)}")
         return 0.0
