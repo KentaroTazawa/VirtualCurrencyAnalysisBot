@@ -648,33 +648,41 @@ def run_analysis():
         )
         NOTIFICATION_CACHE[s["symbol"]] = now
         alerts_sent += 1
-        # 自動注文の判定
+
+        # ===== 自動注文部分（安全版） =====
         try:
             entry = s["plan"]["entry"]
             tp2_pct = (s["plan"]["tp2"] - entry) / entry * 100.0
             if s["score"] >= AUTO_ORDER_MIN_SCORE and abs(tp2_pct) >= AUTO_ORDER_MIN_TP_PCT:
-                # 自動注文を試みる
-                # 1) 残高取得 -> notional
-                balance = get_usdt_asset()
-                if balance is None:
-                    print(f"自動注文失敗: 残高取得できませんでした: {s['symbol']}")
-                else:
+                try:
+                    balance = get_usdt_asset()
+                    if balance is None:
+                        send_error_to_telegram(f"自動注文失敗: 残高取得できませんでした: {s['symbol']}")
+                        continue
+
                     notional = balance * AUTO_ORDER_ASSET_PCT
                     vol, err = calculate_volume_for_notional(s["symbol"], entry, notional)
                     if err:
-                        print(f"自動注文失敗: ボリューム計算失敗 {s['symbol']}: {err}")
+                        send_error_to_telegram(f"自動注文失敗: ボリューム計算失敗 {s['symbol']}: {err}")
+                        continue
+
+                    success, resp = place_market_short_order(
+                        s["symbol"], entry, vol, leverage=AUTO_ORDER_LEVERAGE,
+                        tp_pct=AUTO_ORDER_TAKE_PROFIT_PCT, sl_pct=AUTO_ORDER_STOP_LOSS_PCT
+                    )
+                    if success:
+                        order_id = resp.get("data") or resp.get("orderId") or resp
+                        send_message_to_telegram(
+                            f"✅ 自動ショート注文 成功\n銘柄: {s['symbol']}\nvol: {vol}\nleverage: {AUTO_ORDER_LEVERAGE}\n注文ID: {order_id}"
+                        )
                     else:
-                        success, resp = place_market_short_order(s["symbol"], entry, vol, leverage=AUTO_ORDER_LEVERAGE,
-                                                                 tp_pct=AUTO_ORDER_TAKE_PROFIT_PCT, sl_pct=AUTO_ORDER_STOP_LOSS_PCT)
-                        if success:
-                            order_id = resp.get("data") or resp.get("orderId") or resp
-                            print(f"✅ 自動ショート注文 成功\n銘柄: {s['symbol']}\nvol: {vol}\nleverage: {AUTO_ORDER_LEVERAGE}\n注文ID: {order_id}")
-                        else:
-                            # 注文失敗: 理由通知
-                            err_msg = resp
-                            print(f"❌ 自動ショート注文 失敗\n銘柄: {s['symbol']}\nreason: {json.dumps(err_msg, ensure_ascii=False)[:1500]}")
+                        send_error_to_telegram(f"❌ 自動ショート注文 失敗\n銘柄: {s['symbol']}\nレスポンス: {resp}")
+
+                except Exception as order_e:
+                    send_error_to_telegram(f"自動注文処理例外: {s['symbol']}\n{traceback.format_exc()}")
+
         except Exception:
-            send_error_to_telegram(f"自動注文処理で例外:\n{traceback.format_exc()}")
+            send_error_to_telegram(f"自動注文判定で例外:\n{traceback.format_exc()}")
         time.sleep(1)
 
 @app.route("/")
