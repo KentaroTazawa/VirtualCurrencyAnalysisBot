@@ -201,20 +201,25 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
         return []
 
 def get_available_contract_symbols():
+    """
+    MEXC先物で注文可能な銘柄を取得。
+    tickerに載っている銘柄を全て「注文可能」とみなす。
+    注文時にAPI制限があればエラーでスキップする。
+    """
     try:
-        data = mexc_get("/api/v1/contract/detail")
-        arr = data.get("data", []) or []
+        data = mexc_get("/api/v1/contract/ticker")
+        tickers = data.get("data", []) or []
         available = set()
-        for it in arr:
-            symbol = it.get("symbol")
-            state = it.get("state", 0)  # 0 = 正常稼働
-            if symbol and state == 0:
+        for t in tickers:
+            symbol = t.get("symbol", "")
+            # USDT建て先物だけ対象
+            if symbol.endswith("_USDT"):
                 available.add(symbol)
         return available
     except Exception as e:
         send_error_to_telegram(f"先物銘柄一覧取得失敗:\n{str(e)}")
         return set()
-
+        
 def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
     imap = {
         '1m': 'Min1', '5m': 'Min5', '15m': 'Min15', '30m': 'Min30',
