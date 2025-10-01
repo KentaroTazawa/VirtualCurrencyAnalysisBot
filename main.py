@@ -42,7 +42,7 @@ CONSEC_GREEN_1H = 3               # 1h連続陽線本数
 
 # ====== 通知条件用パラメータ ======
 SCORE_THRESHOLD = 6               # 通知に必要な合計スコア（緩め）
-TP2_MAX_PCT = -8.0                # TP2がこの値以下のときのみ通知（%表記）
+TP1_THRESHOLD = -5                # TP1がこの値以下のとき通知する
 
 # 利確・損切り（固定R管理）
 ATR_PERIOD = 14
@@ -419,11 +419,11 @@ def run_analysis():
 
                 # %計算  
                 entry = plan['entry']  
-                tp2 = plan['tp2']  
-                tp2_pct = (tp2 - entry) / entry * 100  
+                tp1 = plan['tp1']  
+                tp1_pct = (tp1 - entry) / entry * 100  
 
-                # TP2が閾値以下であることを確認  
-                if tp2_pct <= TP2_MAX_PCT:  
+                # TP1が閾値以下であることを確認  
+                if tp1_pct <= TP1_THRESHOLD:  
                     indicators = {  
                         "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),  
                         "RSI(15m)": round(rsi(df_15m["close"], 14).iloc[-1], 2),  
