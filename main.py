@@ -40,8 +40,9 @@ VOL_SPIKE_MULT = 2.5               # 出来高が過去20本平均の2.5倍
 IMPULSE_PCT_5M = 0.04             # 直近急騰の最低合計上昇率(4%)
 CONSEC_GREEN_1H = 3               # 1h連続陽線本数
 
-# スコア
+# ====== 通知条件用パラメータ ======
 SCORE_THRESHOLD = 6               # 通知に必要な合計スコア（緩め）
+TP2_MAX_PCT = -8.0                # TP2がこの値以下のときのみ通知（%表記）
 
 # 利確・損切り（固定R管理）
 ATR_PERIOD = 14
@@ -389,69 +390,74 @@ def run_analysis():
     available = get_available_contract_symbols()
     top_tickers = [t for t in top_tickers if t["symbol"] in available]
 
-    # クールダウン
-    now = datetime.utcnow()
-    cooled = []
-    for t in top_tickers:
-        last_time = NOTIFICATION_CACHE.get(t["symbol"])
-        if last_time and (now - last_time) < timedelta(hours=COOLDOWN_HOURS):
-            continue
-        cooled.append(t)
+    # クールダウン  
+    now = datetime.utcnow()  
+    cooled = []  
+    for t in top_tickers:  
+        last_time = NOTIFICATION_CACHE.get(t["symbol"])  
+        if last_time and (now - last_time) < timedelta(hours=COOLDOWN_HOURS):  
+            continue  
+        cooled.append(t)  
 
-    # スコアリング
-    scored = []
-    for t in cooled:
-        symbol = t["symbol"]
-        current_price = t["last_price"]
+    # スコアリング  
+    scored = []  
+    for t in cooled:  
+        symbol = t["symbol"]  
+        current_price = t["last_price"]  
 
-        try:
-            df_5m = fetch_ohlcv(symbol, interval='5m')
-            df_15m = fetch_ohlcv(symbol, interval='15m')
-            df_60m = fetch_ohlcv(symbol, interval='60m')
-            if any(x is None or x.empty for x in [df_5m, df_15m, df_60m]):
-                continue
+        try:  
+            df_5m = fetch_ohlcv(symbol, interval='5m')  
+            df_15m = fetch_ohlcv(symbol, interval='15m')  
+            df_60m = fetch_ohlcv(symbol, interval='60m')  
+            if any(x is None or x.empty for x in [df_5m, df_15m, df_60m]):  
+                continue  
 
-            # 前提：直近の衝動が弱くても拾えるよう、条件を緩めに
-            # （過熱系シグナルの合意で拾う）
-            score, notes = score_short_setup(symbol, df_5m, df_15m, df_60m)
+            score, notes = score_short_setup(symbol, df_5m, df_15m, df_60m)  
 
-            if score >= SCORE_THRESHOLD and break_of_structure_short(df_5m):
-                plan = plan_short_trade(df_5m)
+            if score >= SCORE_THRESHOLD and break_of_structure_short(df_5m):  
+                plan = plan_short_trade(df_5m)  
 
-                indicators = {
-                    "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),
-                    "RSI(15m)": round(rsi(df_15m["close"], 14).iloc[-1], 2),
-                    "+乖離(5m,EMA50)": round((df_5m["close"].iloc[-1] / ema(df_5m["close"], EMA_DEV_PERIOD).iloc[-1] - 1) * 100, 2),
-                    "ATR(5m)": round(atr(df_5m, ATR_PERIOD).iloc[-1], 6),
-                    "出来高(5m)最新/平均": round(df_5m["vol"].iloc[-1] / max(1e-9, df_5m["vol"].rolling(VOL_SPIKE_LOOKBACK, min_periods=1).mean().iloc[-1]), 2),
-                }
+                # %計算  
+                entry = plan['entry']  
+                tp2 = plan['tp2']  
+                tp2_pct = (tp2 - entry) / entry * 100  
 
-                comment = groq_commentary(symbol, notes, plan) if USE_GROQ_COMMENTARY else ""
+                # TP2が閾値以下であることを確認  
+                if tp2_pct <= TP2_MAX_PCT:  
+                    indicators = {  
+                        "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),  
+                        "RSI(15m)": round(rsi(df_15m["close"], 14).iloc[-1], 2),  
+                        "+乖離(5m,EMA50)": round((df_5m["close"].iloc[-1] / ema(df_5m["close"], EMA_DEV_PERIOD).iloc[-1] - 1) * 100, 2),  
+                        "ATR(5m)": round(atr(df_5m, ATR_PERIOD).iloc[-1], 6),  
+                        "出来高(5m)最新/平均": round(df_5m["vol"].iloc[-1] / max(1e-9, df_5m["vol"].rolling(VOL_SPIKE_LOOKBACK, min_periods=1).mean().iloc[-1]), 2),  
+                    }  
 
-                scored.append({
-                    "symbol": symbol,
-                    "score": score,
-                    "notes": notes,
-                    "plan": plan,
-                    "current_price": current_price,
-                    "change_pct": t["change_pct"],
-                    "indicators": indicators,
-                })
-        except Exception:
-            send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
+                    comment = groq_commentary(symbol, notes, plan) if USE_GROQ_COMMENTARY else ""  
 
-    # スコア順に上位のみ通知
-    scored.sort(key=lambda x: (x["score"], x["change_pct"]), reverse=True)
-    alerts_sent = 0
-    for s in scored[:MAX_ALERTS_PER_RUN]:
-        send_short_signal(
-            s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"],
-            comment=groq_commentary(s["symbol"], s["notes"], s["plan"]) if USE_GROQ_COMMENTARY else "",
-        )
-        NOTIFICATION_CACHE[s["symbol"]] = now
-        alerts_sent += 1
+                    scored.append({  
+                        "symbol": symbol,  
+                        "score": score,  
+                        "notes": notes,  
+                        "plan": plan,  
+                        "current_price": current_price,  
+                        "change_pct": t["change_pct"],  
+                        "indicators": indicators,  
+                    })  
+        except Exception:  
+            send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")  
+
+    # スコア順に上位のみ通知  
+    scored.sort(key=lambda x: (x["score"], x["change_pct"]), reverse=True)  
+    alerts_sent = 0  
+    for s in scored[:MAX_ALERTS_PER_RUN]:  
+        send_short_signal(  
+            s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"],  
+            comment=groq_commentary(s["symbol"], s["notes"], s["plan"]) if USE_GROQ_COMMENTARY else "",  
+        )  
+        NOTIFICATION_CACHE[s["symbol"]] = now  
+        alerts_sent += 1  
         time.sleep(1)
-
+        
     #if alerts_sent == 0:
         #tg_send_md("_今回は条件を満たすショート候補はありませんでした。_")
 
