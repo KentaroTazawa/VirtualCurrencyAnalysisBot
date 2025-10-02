@@ -363,7 +363,14 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
     tp1_pct = (tp1 - entry) / entry * 100
     tp2_pct = (tp2 - entry) / entry * 100
 
-    text = f"""*📉 ショート候補: {display_symbol}*
+    # --- ここで MEXC のアプリスキームと Web フォールバックを追加 ---
+    app_link = f"mexc://futures/{symbol}"
+    web_link = f"https://www.mexc.com/futures/{symbol}"
+    open_link_text = f"[MEXCで開く]({app_link}) / [Webで開く]({web_link})"
+
+    text = f"""*▶️ トレード画面:* {open_link_text}
+
+*📉 ショート候補: {display_symbol}*
 24h変化率: {change_pct:.2f}%  / 現値: {current_price}
 
 *スコア:* {score} / 必要 {SCORE_THRESHOLD}
