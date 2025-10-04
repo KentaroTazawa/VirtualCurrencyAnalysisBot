@@ -366,7 +366,7 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
     # --- ここで MEXC のアプリスキームと Web フォールバックを追加 ---
     app_link = f"mexc://futures/{symbol}"
     web_link = f"https://www.mexc.com/futures/{symbol}"
-    open_link_text = f"[MEXCで開く]({app_link}) / [Webで開く]({web_link})"
+    open_link_text = f"[Webで開く]({web_link})"
 
     text = f"""*▶️ トレード画面:* {open_link_text}
 
