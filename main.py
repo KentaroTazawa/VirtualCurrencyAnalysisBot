@@ -180,16 +180,26 @@ def ema(series: pd.Series, period: int) -> pd.Series:
 
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    """
+    RSI を計算します。従来の単純移動平均ではなく、
+    Wilder 相当の平滑（EWMA with alpha=1/period, adjust=False）を用いています。
+    戻り値は pandas.Series（インデックスは元 series と同じ）。
+    """
     delta = series.diff()
     gain = delta.clip(lower=0.0)
     loss = -delta.clip(upper=0.0)
-    avg_gain = gain.rolling(period, min_periods=1).mean()
-    avg_loss = loss.rolling(period, min_periods=1).mean()
+    # Wilder smoothing: exponential moving average with alpha=1/period
+    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False).mean()
     rs = avg_gain / (avg_loss + 1e-9)
     return 100 - (100 / (1 + rs))
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    ATR を計算します。TR を求めた上で
+    Wilder 相当の平滑（EWMA with alpha=1/period）を適用します。
+    """
     high = df["high"]; low = df["low"]; close = df["close"]
     prev_close = close.shift(1)
     tr = pd.concat([
@@ -197,7 +207,8 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         (high - prev_close).abs(),
         (low - prev_close).abs()
     ], axis=1).max(axis=1)
-    return tr.rolling(period, min_periods=1).mean()
+    # Wilder smoothing for ATR
+    return tr.ewm(alpha=1.0 / period, adjust=False).mean()
 
 
 def bollinger_bands(series: pd.Series, period: int = 20, k: float = 2.0):
@@ -231,11 +242,25 @@ def recent_impulse(df: pd.DataFrame, bars=6, pct=0.05) -> bool:
 
 
 def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
-    if len(df_5m) < 10:
+    """
+    BOS（Break of Structure）判定を従来の単純な 'last close < recent lows min' から厳密化。
+    - recent_n（デフォルト3本, 元実装と同様）と prev_n（前のスイング確認用6本）を使い、
+    - recent_low < prev_low かつ last close < recent_low の両方を満たす時 True。
+    これにより単発ノイズでの誤検出を減らします。
+    """
+    recent_n = 3
+    prev_n = 6
+    min_bars = recent_n + prev_n + 3  # 十分な履歴を要求
+    if len(df_5m) < min_bars:
         return False
-    lows = df_5m["low"]; closes = df_5m["close"]
-    recent_low = lows.iloc[-4:-1].min()
-    return closes.iloc[-1] < recent_low
+    lows = df_5m["low"]
+    closes = df_5m["close"]
+    # recent window: -4:-1 (直近のスイングロー候補、元実装と一致)
+    recent_low = lows.iloc[-(recent_n + 1):-1].min()
+    # previous window: 直近の recent window の前（より長めに取る）
+    prev_low = lows.iloc[-(recent_n + prev_n + 1):-(recent_n + 1)].min()
+    # 条件：最近のスイングローが前のスイングローより低く、かつ終値が最近スイングローを下抜け
+    return (recent_low < prev_low) and (closes.iloc[-1] < recent_low)
 
 
 def count_consecutive_green(df: pd.DataFrame) -> int:
