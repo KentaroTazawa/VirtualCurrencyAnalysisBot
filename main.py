@@ -43,7 +43,7 @@ IMPULSE_PCT_5M = 0.04             # 直近急騰の最低合計上昇率(4%)
 CONSEC_GREEN_1H = 3               # 1h連続陽線本数
 
 # ====== 通知条件用パラメータ ======
-SCORE_THRESHOLD = 6               # 通知に必要な合計スコア（緩め）
+SCORE_THRESHOLD = 5               # 通知に必要な合計スコア（緩め）
 TP1_THRESHOLD = -5                # TP1がこの値以下のとき通知する
 
 # 利確・損切り（固定R管理）
@@ -252,17 +252,40 @@ def recent_impulse(df: pd.DataFrame, bars=6, pct=0.05) -> bool:
 
 
 def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
+    """
+    案①＋案②:
+    - 直近で5%以上の上昇があった後に高値を明確に割り込んだ場合にBOS確定
+    - 割り込み後のRSIが50を下回って確定していることを追加条件にする
+    """
     recent_n = 3
     prev_n = 6
     min_bars = recent_n + prev_n + 3  # 十分な履歴を要求
     if len(df_5m) < min_bars:
         return False
+
+    # --- ① 直近の上昇（5%以上）を確認 ---
+    c0 = df_5m["close"].iloc[-(recent_n + prev_n + 1)]
+    c1 = df_5m["close"].iloc[-(recent_n + 1)]
+    recent_gain = (c1 / c0 - 1.0)
+    if recent_gain < 0.05:
+        return False
+
+    # --- ② 高値割れ確認 ---
     lows = df_5m["low"]
     closes = df_5m["close"]
     recent_low = lows.iloc[-(recent_n + 1):-1].min()
     prev_low = lows.iloc[-(recent_n + prev_n + 1):-(recent_n + 1)].min()
-    return (recent_low < prev_low) and (closes.iloc[-1] < recent_low)
+    bos_triggered = (recent_low < prev_low) and (closes.iloc[-1] < recent_low)
+    if not bos_triggered:
+        return False
 
+    # --- ③ RSI確認：直近確定足のRSIが50未満 ---
+    rsi_series = rsi(df_5m["close"], 14)
+    if len(rsi_series) < 1 or rsi_series.iloc[-1] >= 50:
+        return False
+
+    return True
+  
 
 def count_consecutive_green(df: pd.DataFrame) -> int:
     body = (df["close"] - df["open"]) > 0
