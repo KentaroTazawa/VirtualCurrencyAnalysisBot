@@ -1,6 +1,8 @@
 import os
 import time
 import traceback
+import logging
+import sys
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
@@ -52,16 +54,28 @@ TP2_R = 2.0
 
 NOTIFICATION_CACHE = {}  # {symbol: last_notified_timestamp}
 
+# ========= ロガー =========
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(stream=sys.stdout, level=getattr(logging, LOG_LEVEL, logging.INFO),
+                    format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("VirtualCurrencyAnalysisBot")
+
 # ========= ユーティリティ =========
 
 def mexc_get(path: str, timeout=10):
     url = f"{MEXC_BASE_URL}{path}"
-    res = requests.get(url, timeout=timeout)
-    res.raise_for_status()
-    return res.json()
+    try:
+        logger.debug(f"HTTP GET: {url}")
+        res = requests.get(url, timeout=timeout)
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        logger.error(f"mexc_get error for {url}: {e}")
+        raise
 
 
 def send_error_to_telegram(error_message: str):
+    logger.error(error_message)
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         requests.post(
@@ -72,8 +86,8 @@ def send_error_to_telegram(error_message: str):
             },
             timeout=10,
         )
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"Failed to send error to Telegram: {e}")
 
 
 def tg_send_md(text: str):
@@ -98,6 +112,7 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
     try:
         data = mexc_get("/api/v1/contract/ticker")
         tickers = data.get("data", [])
+        logger.info(f"Fetched {len(tickers)} tickers from /ticker")
         filtered = []
         for t in tickers:
             try:
@@ -106,9 +121,10 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
                 change_pct = float(t.get("riseFallRate", 0)) * 100
                 if change_pct >= MIN_24H_CHANGE_PCT and symbol.endswith("_USDT"):
                     filtered.append({"symbol": symbol, "last_price": last_price, "change_pct": change_pct})
-            except:
+            except Exception:
                 continue
         filtered.sort(key=lambda x: x["change_pct"], reverse=True)
+        logger.info(f"{len(filtered)} symbols passed 24h change filter (>{MIN_24H_CHANGE_PCT}%)")
         return filtered[:limit]
     except Exception as e:
         send_error_to_telegram(f"MEXC 急上昇銘柄取得エラー:\n{str(e)}")
@@ -119,7 +135,9 @@ def get_available_contract_symbols():
     try:
         data = mexc_get("/api/v1/contract/detail")
         arr = data.get("data", []) or []
-        return {it.get("symbol") for it in arr if it.get("symbol")}
+        symbols = {it.get("symbol") for it in arr if it.get("symbol")}
+        logger.info(f"Fetched {len(symbols)} available contract symbols")
+        return symbols
     except Exception as e:
         send_error_to_telegram(f"先物銘柄一覧取得失敗:\n{str(e)}")
         return set()
@@ -136,6 +154,7 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
 
     for attempt in range(1, max_retries + 1):
         try:
+            logger.debug(f"Fetching kline for {symbol} interval {interval} (attempt {attempt})")
             data = mexc_get(url, timeout=timeout_sec)
             if not data.get("success", False):
                 err_msg = data.get("message") or data.get("code") or "Unknown"
@@ -165,8 +184,10 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
                 })
             df = pd.DataFrame(rows).dropna()
             df = df.sort_values("ts").reset_index(drop=True)
+            logger.debug(f"Fetched {len(df)} rows for {symbol} {interval}")
             return df
         except Exception as e:
+            logger.warning(f"[{symbol}] {interval} fetch attempt {attempt} failed: {e}")
             if attempt == max_retries:
                 send_error_to_telegram(f"{symbol} の{interval}ローソク取得失敗:\n{str(e)}")
             time.sleep(1)
@@ -180,15 +201,9 @@ def ema(series: pd.Series, period: int) -> pd.Series:
 
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """
-    RSI を計算します。従来の単純移動平均ではなく、
-    Wilder 相当の平滑（EWMA with alpha=1/period, adjust=False）を用いています。
-    戻り値は pandas.Series（インデックスは元 series と同じ）。
-    """
     delta = series.diff()
     gain = delta.clip(lower=0.0)
     loss = -delta.clip(upper=0.0)
-    # Wilder smoothing: exponential moving average with alpha=1/period
     avg_gain = gain.ewm(alpha=1.0 / period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1.0 / period, adjust=False).mean()
     rs = avg_gain / (avg_loss + 1e-9)
@@ -196,10 +211,6 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """
-    ATR を計算します。TR を求めた上で
-    Wilder 相当の平滑（EWMA with alpha=1/period）を適用します。
-    """
     high = df["high"]; low = df["low"]; close = df["close"]
     prev_close = close.shift(1)
     tr = pd.concat([
@@ -207,7 +218,6 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         (high - prev_close).abs(),
         (low - prev_close).abs()
     ], axis=1).max(axis=1)
-    # Wilder smoothing for ATR
     return tr.ewm(alpha=1.0 / period, adjust=False).mean()
 
 
@@ -242,12 +252,6 @@ def recent_impulse(df: pd.DataFrame, bars=6, pct=0.05) -> bool:
 
 
 def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
-    """
-    BOS（Break of Structure）判定を従来の単純な 'last close < recent lows min' から厳密化。
-    - recent_n（デフォルト3本, 元実装と同様）と prev_n（前のスイング確認用6本）を使い、
-    - recent_low < prev_low かつ last close < recent_low の両方を満たす時 True。
-    これにより単発ノイズでの誤検出を減らします。
-    """
     recent_n = 3
     prev_n = 6
     min_bars = recent_n + prev_n + 3  # 十分な履歴を要求
@@ -255,16 +259,12 @@ def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
         return False
     lows = df_5m["low"]
     closes = df_5m["close"]
-    # recent window: -4:-1 (直近のスイングロー候補、元実装と一致)
     recent_low = lows.iloc[-(recent_n + 1):-1].min()
-    # previous window: 直近の recent window の前（より長めに取る）
     prev_low = lows.iloc[-(recent_n + prev_n + 1):-(recent_n + 1)].min()
-    # 条件：最近のスイングローが前のスイングローより低く、かつ終値が最近スイングローを下抜け
     return (recent_low < prev_low) and (closes.iloc[-1] < recent_low)
 
 
 def count_consecutive_green(df: pd.DataFrame) -> int:
-    # 陽線を1、陰線を0
     body = (df["close"] - df["open"]) > 0
     cnt = 0
     for val in body.iloc[::-1]:
@@ -281,11 +281,9 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     score = 0
     notes = []
 
-    # 直近急騰（5m）
     if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
         score += 1; notes.append("5m直近急騰")
 
-    # RSI過熱
     rsi5 = rsi(df_5m["close"], 14).iloc[-1]
     rsi15 = rsi(df_15m["close"], 14).iloc[-1]
     if rsi5 >= RSI_OB_5M:
@@ -293,29 +291,25 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     if rsi15 >= RSI_OB_15M:
         score += 2; notes.append(f"RSI15m過熱({rsi15:.1f})")
 
-    # ボリンジャー上限ブレイク
     _, upper5, _ = bollinger_bands(df_5m["close"], BB_PERIOD, BB_K)
     if df_5m["close"].iloc[-1] > upper5.iloc[-1] * (1.0 + BB_UPPER_BREAK_PCT):
         score += 2; notes.append("BB上限オーバー")
 
-    # EMA50からの正乖離
     ema50_5 = ema(df_5m["close"], EMA_DEV_PERIOD)
     dev_pct = (df_5m["close"].iloc[-1] / ema50_5.iloc[-1] - 1.0) * 100.0
     if dev_pct >= EMA_DEV_MIN_PCT:
         score += 2; notes.append(f"+{dev_pct:.1f}% 50EMA乖離")
 
-    # 出来高スパイク
     if volume_spike(df_5m["vol"], VOL_SPIKE_LOOKBACK, VOL_SPIKE_MULT):
         score += 2; notes.append("出来高スパイク")
 
-    # 1h連続陽線
     if count_consecutive_green(df_60m) >= CONSEC_GREEN_1H:
         score += 1; notes.append(f"1h連続陽線≥{CONSEC_GREEN_1H}")
 
-    # 反転の芽（BOS）
     if break_of_structure_short(df_5m):
         score += 2; notes.append("5m BOS下抜け")
 
+    logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
     return score, notes
 
 
@@ -383,12 +377,10 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
     tp1 = plan['tp1']
     tp2 = plan['tp2']
 
-    # %計算
     sl_pct = (sl - entry) / entry * 100
     tp1_pct = (tp1 - entry) / entry * 100
     tp2_pct = (tp2 - entry) / entry * 100
 
-    # --- ここで Web フォールバックを追加 ---
     web_link = f"https://www.mexc.com/futures/{symbol}"
     open_link_text = f"[Webで開く]({web_link})"
 
@@ -417,9 +409,12 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
 # ========= メイン =========
 
 def run_analysis():
+    logger.info("=== run_analysis started ===")
     top_tickers = get_top_symbols_by_24h_change()
     available = get_available_contract_symbols()
+    before_filter_count = len(top_tickers)
     top_tickers = [t for t in top_tickers if t["symbol"] in available]
+    logger.info(f"Top tickers: {before_filter_count} -> {len(top_tickers)} after availability filter")
 
     # クールダウン  
     now = datetime.utcnow()  
@@ -427,8 +422,10 @@ def run_analysis():
     for t in top_tickers:  
         last_time = NOTIFICATION_CACHE.get(t["symbol"])  
         if last_time and (now - last_time) < timedelta(hours=COOLDOWN_HOURS):  
+            logger.info(f"Skipping {t['symbol']} due to cooldown. last_notified={last_time}")
             continue  
         cooled.append(t)  
+    logger.info(f"{len(cooled)} symbols remain after cooldown")
 
     # スコアリング  
     scored = []  
@@ -436,24 +433,27 @@ def run_analysis():
         symbol = t["symbol"]  
         current_price = t["last_price"]  
 
+        logger.info(f"Processing {symbol}: price={current_price}, 24h_change={t['change_pct']:.2f}%")
+
         try:  
             df_5m = fetch_ohlcv(symbol, interval='5m')  
             df_15m = fetch_ohlcv(symbol, interval='15m')  
             df_60m = fetch_ohlcv(symbol, interval='60m')  
             if any(x is None or x.empty for x in [df_5m, df_15m, df_60m]):  
+                logger.warning(f"{symbol} skipped: missing OHLCV data -> 5m:{None if df_5m is None else len(df_5m)}, 15m:{None if df_15m is None else len(df_15m)}, 60m:{None if df_60m is None else len(df_60m)}")
                 continue  
 
             score, notes = score_short_setup(symbol, df_5m, df_15m, df_60m)  
+            bos = break_of_structure_short(df_5m)
+            logger.info(f"{symbol} scored: score={score}, BOS={bos}, notes={notes}")
 
-            if score >= SCORE_THRESHOLD and break_of_structure_short(df_5m):  
+            if score >= SCORE_THRESHOLD and bos:  
                 plan = plan_short_trade(df_5m)  
 
-                # %計算  
                 entry = plan['entry']  
                 tp1 = plan['tp1']  
                 tp1_pct = (tp1 - entry) / entry * 100  
 
-                # TP1が閾値以下であることを確認  
                 if tp1_pct <= TP1_THRESHOLD:  
                     indicators = {  
                         "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),  
@@ -474,23 +474,34 @@ def run_analysis():
                         "change_pct": t["change_pct"],  
                         "indicators": indicators,  
                     })  
-        except Exception:  
-            send_error_to_telegram(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")  
+                    logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
+                else:
+                    logger.info(f"{symbol} skipped: TP1 threshold not met (tp1_pct={tp1_pct:.2f}% > {TP1_THRESHOLD}%)")
+            else:
+                logger.info(f"{symbol} skipped: conditions not met (score {score} / needed {SCORE_THRESHOLD}, BOS {bos})")
+        except Exception:
+            logger.error(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")  
 
     # スコア順に上位のみ通知  
     scored.sort(key=lambda x: (x["score"], x["change_pct"]), reverse=True)  
+    logger.info(f"{len(scored)} total candidates after scoring; preparing to send up to {MAX_ALERTS_PER_RUN} alerts")
     alerts_sent = 0  
     for s in scored[:MAX_ALERTS_PER_RUN]:  
-        send_short_signal(  
-            s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"],  
-            comment=groq_commentary(s["symbol"], s["notes"], s["plan"]) if USE_GROQ_COMMENTARY else "",  
-        )  
-        NOTIFICATION_CACHE[s["symbol"]] = now  
-        alerts_sent += 1  
-        time.sleep(1)
+        try:
+            logger.info(f"Sending alert for {s['symbol']} (score={s['score']}, change={s['change_pct']:.2f}%)")
+            send_short_signal(  
+                s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"],  
+                comment=groq_commentary(s["symbol"], s["notes"], s["plan"]) if USE_GROQ_COMMENTARY else "",  
+            )  
+            NOTIFICATION_CACHE[s["symbol"]] = now  
+            logger.info(f"Notification recorded for {s['symbol']} at {now}")
+            alerts_sent += 1  
+            time.sleep(1)
+        except Exception as e:
+            logger.error(f"Failed to send alert for {s['symbol']}: {e}")
         
-    #if alerts_sent == 0:
-        #tg_send_md("_今回は条件を満たすショート候補はありませんでした。_")
+    if alerts_sent == 0:
+        logger.info("No alerts sent in this run.")
 
 
 @app.route("/")
