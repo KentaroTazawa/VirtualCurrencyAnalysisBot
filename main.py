@@ -281,7 +281,7 @@ def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
 
     # --- ③ RSI確認：直近確定足のRSIが50未満 ---
     rsi_series = rsi(df_5m["close"], 14)
-    if len(rsi_series) < 1 or rsi_series.iloc[-1] >= 50:
+    if len(rsi_series) < 1 or rsi_series.iloc[-1] >= 60:
         return False
 
     return True
