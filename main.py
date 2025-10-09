@@ -321,6 +321,7 @@ YESまたはNOで答えてください。
             max_tokens=10,
         )
         ans = res.choices[0].message.content.strip().upper()
+        logger.info(f"[{symbol}] Groq answer: {ans}")
         return "YES" in ans
     except Exception as e:
         logger.warning(f"[{symbol}] BOS AI判定失敗: {e}")
