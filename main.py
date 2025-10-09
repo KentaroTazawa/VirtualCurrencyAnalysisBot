@@ -22,7 +22,7 @@ client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 app = Flask(__name__)
 
 # ====== 運用パラメータ（緩めにして機会を増やす） ======
-TOP_SYMBOLS_LIMIT = 40  # 候補の母集団（24h上昇上位）
+TOP_SYMBOLS_LIMIT = 20  # 候補の母集団（24h上昇上位）
 MAX_ALERTS_PER_RUN = 5  # 1回の実行で通知する最大件数（増やす）
 COOLDOWN_HOURS = 1.0  # 同一銘柄のクールダウン（短縮）
 USE_GROQ_COMMENTARY = False  # TrueでGroq簡易解説を付与
@@ -294,7 +294,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame) -> bool:
         - RSI(14): {rsi_val:.1f}
         - 50EMA乖離: {dev_pct:.2f}%
         - 出来高倍率: {vol_ratio:.2f}
-        これらの条件から、短期的に「上昇が一服して下落(BOS)が始まった」と判断できますか？ YESまたはNOで答えてください。
+        以上の条件から、これからすぐに「下落(BOS)が始まる」と予想できる場合は「YES」それ以外の場合は「NO」と答えてください。理由は不要です。
         """
         res = client.chat.completions.create(
             model=GROQ_MODEL,
