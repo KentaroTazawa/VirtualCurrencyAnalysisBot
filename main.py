@@ -1,9 +1,11 @@
-# main.py (修正版: 最小変更でデバッグ／緩和切替を追加)
+# main.py (修正版: Groq JSON応答 + confidence利用 + 最小変更で緩和/デバッグ切替を追加)
 import os
 import time
 import traceback
 import logging
 import sys
+import json
+import re
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
@@ -48,7 +50,7 @@ TP1_THRESHOLD = -5
 
 # quick debug / operational switches via ENV
 RELAX_NOTIFICATION_RULES = os.getenv("RELAX_NOTIFICATION_RULES", "0") == "1"
-# If set, do not require BOS to send alerts (useful for debugging / постепенный導入)
+# If set, do not require BOS to send alerts (useful for debugging / 段階的導入)
 DISABLE_TP1_CHECK = os.getenv("DISABLE_TP1_CHECK", "0") == "1"
 OVERRIDE_SCORE_THRESHOLD = int(os.getenv("OVERRIDE_SCORE_THRESHOLD", "0") or 0)
 
@@ -61,6 +63,16 @@ TP1_R = 1.0
 TP2_R = 2.0
 
 NOTIFICATION_CACHE = {}  # {symbol: last_notified_timestamp}
+
+# ========= BOS 関連パラメタ（新規、上書きは環境で後で行ってください） ========
+BOS_RECENT_GAIN_THRESHOLD = 0.02  # 2% に緩める（元は0.03）
+BOS_RSI_MAX = 65
+BOS_REQUIRE_VOLUME = True
+BOS_VOL_MULT = 1.8
+
+# ========= AI confidence 統合ルール用閾値 ========
+CONF_FOR_ANY_SCORE = 0.75
+CONF_FOR_LOW_SCORE = 0.90
 
 # ========= ロガー =========
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -253,7 +265,9 @@ def recent_impulse(df: pd.DataFrame, bars=6, pct=0.05) -> bool:
     c1 = df["close"].iloc[-1]
     return (c1 / c0 - 1.0) >= pct
 
+# ========= BOS 判定（非AI） =========
 def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
+    # 少し緩めの閾値（BOS_RECENT_GAIN_THRESHOLD）を使うように変更（最小限の修正）
     recent_n = 3
     prev_n = 6
     min_bars = recent_n + prev_n + 3
@@ -262,7 +276,7 @@ def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
     c0 = df_5m["close"].iloc[-(recent_n + prev_n + 1)]
     c1 = df_5m["close"].iloc[-(recent_n + 1)]
     recent_gain = (c1 / c0 - 1.0)
-    if recent_gain < 0.03:
+    if recent_gain < BOS_RECENT_GAIN_THRESHOLD:  # 0.02 に緩和
         return False
     lows = df_5m["low"]; closes = df_5m["close"]
     recent_low = lows.iloc[-(recent_n + 1):-1].min()
@@ -271,43 +285,111 @@ def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
     if not bos_triggered:
         return False
     rsi_series = rsi(df_5m["close"], 14)
-    if len(rsi_series) < 1 or rsi_series.iloc[-1] >= 60:
+    if len(rsi_series) < 1 or rsi_series.iloc[-1] >= BOS_RSI_MAX:
         return False
+    # 出来高確認（任意）
+    if BOS_REQUIRE_VOLUME:
+        vol_ratio = df_5m["vol"].iloc[-1] / max(1e-9, df_5m["vol"].rolling(20).mean().iloc[-1])
+        if vol_ratio < BOS_VOL_MULT:
+            return False
     return True
 
-def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame) -> bool:
-    if break_of_structure_short(df_5m):
-        return True
-    if not client:
-        return False
+# ========= Groq 応答の JSON パーサ（新規） =========
+def parse_groq_json_response(raw_text: str):
+    """
+    raw_text から最初の JSON オブジェクトを抽出して parse -> dict を返す。
+    期待するキー: decision (YES/NO), confidence (0-1), reason (str)
+    戻り値: (decision_bool, confidence_float, reason_str)
+    """
     try:
+        m = re.search(r'\{.*\}', raw_text, re.S)
+        if not m:
+            # 直接 YES/NO 単語で返している場合のフォールバック
+            txt = raw_text.strip().upper()
+            if "YES" in txt and "NO" not in txt:
+                return True, 0.5, "raw_yes_fallback"
+            if "NO" in txt and "YES" not in txt:
+                return False, 0.5, "raw_no_fallback"
+            return False, 0.0, "ambiguous_no_json"
+        obj = json.loads(m.group(0))
+        decision = obj.get("decision", "")
+        conf = float(obj.get("confidence", 0.0))
+        reason = str(obj.get("reason", "") or "")[:200]
+        decision_bool = str(decision).strip().upper() == "YES"
+        conf = max(0.0, min(1.0, conf))
+        return decision_bool, conf, reason
+    except Exception as e:
+        logger.warning(f"parse_groq_json_response failed: {e} -- raw:{raw_text[:200]}")
+        return False, 0.0, "parse_error"
+
+# ========= BOS 判定（AI） - 改良版: JSON 応答 + confidence を返す（変更） =========
+def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
+    """
+    戻り値: (decision_bool, confidence_float, reason_str)
+    - decision_bool: Groq が YES と判断したか
+    - confidence_float: 0.0-1.0 の推定確信度（モデルに依存、プロンプト上で数値を出すよう要請）
+    - reason_str: 短文理由またはフォールバック文字列
+    """
+    # まずは非AI判定が True ならそのまま True, high confidence で返す
+    if break_of_structure_short(df_5m):
+        return True, 0.99, "rule_based_bos"
+    if not client:
+        return False, 0.0, "groq_not_configured"
+    try:
+        # 特徴量を短くまとめる（過度に長文にしない）
         rsi_series = rsi(df_5m["close"], 14)
-        rsi_val = rsi_series.iloc[-1]
+        rsi_val = float(rsi_series.iloc[-1])
         highs, lows, closes = df_5m["high"], df_5m["low"], df_5m["close"]
-        recent_gain = (closes.iloc[-4] / closes.iloc[-10] - 1.0) * 100
-        dev_pct = (closes.iloc[-1] / ema(df_5m["close"], 50).iloc[-1] - 1.0) * 100
-        vol_ratio = df_5m["vol"].iloc[-1] / df_5m["vol"].rolling(20).mean().iloc[-1]
-        content = f"""
-        銘柄: {symbol}
-        直近の特徴:
-        - 直近上昇率: {recent_gain:.2f}%
-        - RSI(14): {rsi_val:.1f}
-        - 50EMA乖離: {dev_pct:.2f}%
-        - 出来高倍率: {vol_ratio:.2f}
-        以上の状況の銘柄について、このあと数分以内に「下落(BOS)が始まる」と予想できる場合は「YES」それ以外の場合は「NO」と答えてください。理由は不要です。
-        """
+        # recent_gain を直近8本 / 直近20本などで柔軟に
+        if len(closes) >= 20:
+            recent_gain = (closes.iloc[-4] / closes.iloc[-10] - 1.0) * 100
+        else:
+            recent_gain = (closes.iloc[-4] / closes.iloc[0] - 1.0) * 100
+        dev_pct = (closes.iloc[-1] / ema(df_5m["close"], EMA_DEV_PERIOD).iloc[-1] - 1.0) * 100
+        vol_mean = df_5m["vol"].rolling(20, min_periods=1).mean().iloc[-1]
+        vol_ratio = (df_5m["vol"].iloc[-1] / max(1e-9, vol_mean)) if vol_mean > 0 else 0.0
+        recent_closes = df_5m["close"].iloc[-8:].tolist() if len(df_5m) >= 8 else df_5m["close"].tolist()
+
+        payload = {
+            "symbol": symbol,
+            "rsi14": round(rsi_val, 2),
+            "ema50_dev_pct": round(dev_pct, 2),
+            "vol_ratio": round(vol_ratio, 2),
+            "last_close": round(float(closes.iloc[-1]), 8),
+            "recent_closes": [round(float(x), 8) for x in recent_closes],
+        }
+
+        # プロンプトで JSON だけを返すよう強く指示（最小限の説明を外さない）
+        prompt = (
+            "You are a concise quantitative trading assistant.\n"
+            "Input (JSON): " + json.dumps(payload) + ".\n"
+            "Answer ONLY with a JSON object containing keys:\n"
+            '  - "decision": "YES" or "NO"\n'
+            '  - "confidence": a number between 0.0 and 1.0\n'
+            '  - "reason": short (<=60 chars) explanation\n'
+            "Do NOT include any other text outside the JSON."
+        )
+
         res = client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[{"role": "user", "content": content}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0,
-            max_tokens=10,
+            max_tokens=120,
         )
-        ans = res.choices[0].message.content.strip().upper()
-        logger.info(f"[{symbol}] Groq answer: {ans}")
-        return "YES" in ans
+        raw = res.choices[0].message.content
+        logger.info(f"[{symbol}] Groq raw: {raw[:300]}")
+        # ログファイルにも保存（検証用）
+        try:
+            with open("ai_responses.log", "a", encoding="utf-8") as f:
+                f.write(f"{datetime.utcnow().isoformat()} | {symbol} | {raw.replace(chr(10),' ')}\n")
+        except Exception:
+            logger.debug("Failed to append to ai_responses.log (non-fatal)")
+
+        decision_bool, conf, reason = parse_groq_json_response(raw)
+        return decision_bool, conf, reason
     except Exception as e:
         logger.warning(f"[{symbol}] BOS AI判定失敗: {e}")
-        return False
+        return False, 0.0, "exception"
 
 def count_consecutive_green(df: pd.DataFrame) -> int:
     body = (df["close"] - df["open"]) > 0
@@ -342,9 +424,26 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
         score += 2; notes.append("出来高スパイク")
     if count_consecutive_green(df_60m) >= CONSEC_GREEN_1H:
         score += 1; notes.append(f"1h連続陽線≥{CONSEC_GREEN_1H}")
-    # AI 判定をここでスコアに加える（元の挙動を維持）
-    if break_of_structure_short_ai(symbol, df_5m):
-        score += 2; notes.append("5m BOS下抜け(Groq判定含む)")
+
+    # AI 判定をここでスコアに加える（挙動を保ちつつ confidence を利用）
+    try:
+        ai_decision, ai_conf, ai_reason = break_of_structure_short_ai(symbol, df_5m)
+        # ログを残す
+        logger.debug(f"{symbol} AI判定 -> decision={ai_decision}, conf={ai_conf:.2f}, reason={ai_reason}")
+        # スコアへの貢献は、AIがYESかつ confidence がある程度高い場合に加点
+        if ai_decision:
+            # 高信頼なら +2、やや低めなら +1（安全側）
+            if ai_conf >= CONF_FOR_ANY_SCORE:
+                score += 2
+                notes.append(f"5m BOS下抜け(Groq判定 conf={ai_conf:.2f})")
+            elif ai_conf >= 0.5:
+                score += 1
+                notes.append(f"5m BOS示唆(Groq弱 conf={ai_conf:.2f})")
+            else:
+                notes.append(f"Groq低信頼({ai_conf:.2f}) 無視")
+    except Exception as e:
+        logger.warning(f"{symbol} AI判定で例外: {e}")
+
     logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
     return score, notes
 
@@ -460,15 +559,26 @@ def run_analysis():
 
             # 非AI BOS と AI BOS の統合判定（AI が有効なら補正）
             non_ai_bos = break_of_structure_short(df_5m)
-            ai_bos = False
+            ai_decision = False
+            ai_conf = 0.0
+            ai_reason = ""
             if not non_ai_bos and client:
                 try:
-                    ai_bos = break_of_structure_short_ai(symbol, df_5m)
+                    ai_decision, ai_conf, ai_reason = break_of_structure_short_ai(symbol, df_5m)
                 except Exception as e:
                     logger.warning(f"{symbol} AI BOS 判定で例外: {e}")
-            combined_bos = non_ai_bos or ai_bos
+            # 統合ルール：非AIが True なら採用。非AI False の場合、AI が YES かつ信頼度で採否
+            if non_ai_bos:
+                combined_bos = True
+            else:
+                if ai_decision:
+                    # score に応じて必要信頼度を変える
+                    required_conf = CONF_FOR_ANY_SCORE if score >= SCORE_THRESHOLD else CONF_FOR_LOW_SCORE
+                    combined_bos = ai_conf >= required_conf
+                else:
+                    combined_bos = False
 
-            logger.info(f"{symbol} scored: score={score}, non_ai_bos={non_ai_bos}, ai_bos={ai_bos}, notes={notes}")
+            logger.info(f"{symbol} scored: score={score}, non_ai_bos={non_ai_bos}, ai_decision={ai_decision}, ai_conf={ai_conf:.2f}, notes={notes}")
 
             # 通知条件: (1) スコア閾値以上 AND ((BOSがある) OR (緩和モードON))
             if score >= SCORE_THRESHOLD and (combined_bos or RELAX_NOTIFICATION_RULES):
