@@ -287,6 +287,46 @@ def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
     return True
   
 
+def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame) -> bool:
+    if break_of_structure_short(df_5m):
+        return True  # 通常ロジックで明確にBOS確定なら即True
+
+    if not client:
+        return False  # Groq未設定時は安全にFalse返す
+
+    try:
+        rsi_series = rsi(df_5m["close"], 14)
+        rsi_val = rsi_series.iloc[-1]
+        highs, lows, closes = df_5m["high"], df_5m["low"], df_5m["close"]
+        recent_gain = (closes.iloc[-4] / closes.iloc[-10] - 1.0) * 100
+        dev_pct = (closes.iloc[-1] / ema(df_5m["close"], 50).iloc[-1] - 1.0) * 100
+        vol_ratio = df_5m["vol"].iloc[-1] / df_5m["vol"].rolling(20).mean().iloc[-1]
+
+        content = f"""
+銘柄: {symbol}
+直近の特徴:
+- 直近上昇率: {recent_gain:.2f}%
+- RSI(14): {rsi_val:.1f}
+- 50EMA乖離: {dev_pct:.2f}%
+- 出来高倍率: {vol_ratio:.2f}
+
+これらの条件から、短期的に「上昇が一服して下落(BOS)が始まった」と判断できますか？
+YESまたはNOで答えてください。
+"""
+
+        res = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": content}],
+            temperature=0,
+            max_tokens=10,
+        )
+        ans = res.choices[0].message.content.strip().upper()
+        return "YES" in ans
+    except Exception as e:
+        logger.warning(f"[{symbol}] BOS AI判定失敗: {e}")
+        return False
+
+
 def count_consecutive_green(df: pd.DataFrame) -> int:
     body = (df["close"] - df["open"]) > 0
     cnt = 0
@@ -329,8 +369,11 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     if count_consecutive_green(df_60m) >= CONSEC_GREEN_1H:
         score += 1; notes.append(f"1h連続陽線≥{CONSEC_GREEN_1H}")
 
-    if break_of_structure_short(df_5m):
-        score += 2; notes.append("5m BOS下抜け")
+    #if break_of_structure_short(df_5m):
+    #    score += 2; notes.append("5m BOS下抜け")
+
+    if break_of_structure_short_ai(symbol, df_5m):
+        score += 2; notes.append("5m BOS下抜け(Groq判定含む)")
 
     logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
     return score, notes
