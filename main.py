@@ -383,7 +383,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             with open("ai_responses.log", "a", encoding="utf-8") as f:
                 f.write(f"{datetime.utcnow().isoformat()} | {symbol} | {raw.replace(chr(10),' ')}\n")
         except Exception:
-            logger.debug("Failed to append to ai_responses.log (non-fatal)")
+            logger.debug("Faatal)")
 
         decision_bool, conf, reason = parse_groq_json_response(raw)
         return decision_bool, conf, reason
@@ -405,6 +405,9 @@ def count_consecutive_green(df: pd.DataFrame) -> int:
 def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df_60m: pd.DataFrame):
     score = 0
     notes = []
+    bos_decision = False
+    ai_conf = 0.0
+    ai_reason = ""
     if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
         score += 1; notes.append("5m直近急騰")
     rsi5 = rsi(df_5m["close"], 14).iloc[-1]
@@ -427,11 +430,11 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
 
     # AI 判定をここでスコアに加える（挙動を保ちつつ confidence を利用）
     try:
-        ai_decision, ai_conf, ai_reason = break_of_structure_short_ai(symbol, df_5m)
+        bos_decision, ai_conf, ai_reason = break_of_structure_short_ai(symbol, df_5m)
         # ログを残す
-        logger.debug(f"{symbol} AI判定 -> decision={ai_decision}, conf={ai_conf:.2f}, reason={ai_reason}")
+        logger.debug(f"{symbol} AI判定 -> decision={bos_decision}, conf={ai_conf:.2f}, reason={ai_reason}")
         # スコアへの貢献は、AIがYESかつ confidence がある程度高い場合に加点
-        if ai_decision:
+        if bos_decision:
             # 高信頼なら +2、やや低めなら +1（安全側）
             if ai_conf >= CONF_FOR_ANY_SCORE:
                 score += 2
@@ -445,7 +448,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
         logger.warning(f"{symbol} AI判定で例外: {e}")
 
     logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
-    return score, notes
+    return score, notes, bos_decision, ai_conf, ai_reason
 
 # ========= 取引計画 =========
 def plan_short_trade(df_5m: pd.DataFrame):
@@ -555,33 +558,12 @@ def run_analysis():
                 logger.warning(f"{symbol} skipped: missing OHLCV data -> 5m:{None if df_5m is None else len(df_5m)}, 15m:{None if df_15m is None else len(df_15m)}, 60m:{None if df_60m is None else len(df_60m)}")
                 continue
 
-            score, notes = score_short_setup(symbol, df_5m, df_15m, df_60m)
-
             # 非AI BOS と AI BOS の統合判定（AI が有効なら補正）
-            non_ai_bos = break_of_structure_short(df_5m)
-            ai_decision = False
-            ai_conf = 0.0
-            ai_reason = ""
-            if not non_ai_bos and client:
-                try:
-                    ai_decision, ai_conf, ai_reason = break_of_structure_short_ai(symbol, df_5m)
-                except Exception as e:
-                    logger.warning(f"{symbol} AI BOS 判定で例外: {e}")
-            # 統合ルール：非AIが True なら採用。非AI False の場合、AI が YES かつ信頼度で採否
-            if non_ai_bos:
-                combined_bos = True
-            else:
-                if ai_decision:
-                    # score に応じて必要信頼度を変える
-                    required_conf = CONF_FOR_ANY_SCORE if score >= SCORE_THRESHOLD else CONF_FOR_LOW_SCORE
-                    combined_bos = ai_conf >= required_conf
-                else:
-                    combined_bos = False
-
-            logger.info(f"{symbol} scored: score={score}, non_ai_bos={non_ai_bos}, ai_decision={ai_decision}, ai_conf={ai_conf:.2f}, notes={notes}")
+            score, notes, bos_decision, ai_conf, ai_reason = score_short_setup(symbol, df_5m, df_15m, df_60m)
+            logger.info(f"{symbol} scored: score={score}, bos_decision={bos_decision}, ai_conf={ai_conf:.2f}, notes={notes}")
 
             # 通知条件: (1) スコア閾値以上 AND ((BOSがある) OR (緩和モードON))
-            if score >= SCORE_THRESHOLD and (combined_bos or RELAX_NOTIFICATION_RULES):
+            if score >= SCORE_THRESHOLD and (bos_decision or RELAX_NOTIFICATION_RULES):
                 plan = plan_short_trade(df_5m)
                 entry = plan['entry']
                 tp1 = plan['tp1']
@@ -611,7 +593,7 @@ def run_analysis():
                     })
                     logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
             else:
-                logger.info(f"{symbol} skipped: conditions not met (score {score} / needed {SCORE_THRESHOLD}, combined_bos {combined_bos}, RELAX={RELAX_NOTIFICATION_RULES})")
+                logger.info(f"{symbol} skipped: conditions not met (score {score} / needed {SCORE_THRESHOLD}, bos_decision {bos_decision}, RELAX={RELAX_NOTIFICATION_RULES})")
         except Exception:
             logger.error(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
 
