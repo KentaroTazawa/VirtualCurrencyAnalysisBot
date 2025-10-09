@@ -254,8 +254,8 @@ def recent_impulse(df: pd.DataFrame, bars=6, pct=0.05) -> bool:
 def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
     """
     案①＋案②:
-    - 直近で5%以上の上昇があった後に高値を明確に割り込んだ場合にBOS確定
-    - 割り込み後のRSIが50を下回って確定していることを追加条件にする
+    - 直近で3%以上の上昇があった後に高値を明確に割り込んだ場合にBOS確定
+    - 割り込み後のRSIが60を下回って確定していることを追加条件にする
     """
     recent_n = 3
     prev_n = 6
@@ -263,11 +263,11 @@ def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
     if len(df_5m) < min_bars:
         return False
 
-    # --- ① 直近の上昇（5%以上）を確認 ---
+    # --- ① 直近の上昇（3%以上）を確認 ---
     c0 = df_5m["close"].iloc[-(recent_n + prev_n + 1)]
     c1 = df_5m["close"].iloc[-(recent_n + 1)]
     recent_gain = (c1 / c0 - 1.0)
-    if recent_gain < 0.05:
+    if recent_gain < 0.03:
         return False
 
     # --- ② 高値割れ確認 ---
