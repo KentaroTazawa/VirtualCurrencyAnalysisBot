@@ -383,7 +383,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             with open("ai_responses.log", "a", encoding="utf-8") as f:
                 f.write(f"{datetime.utcnow().isoformat()} | {symbol} | {raw.replace(chr(10),' ')}\n")
         except Exception:
-            logger.debug("Faatal)")
+            logger.debug("Failed to append to ai_responses.log (non-fatal)")
 
         decision_bool, conf, reason = parse_groq_json_response(raw)
         return decision_bool, conf, reason
