@@ -26,7 +26,7 @@ TOP_SYMBOLS_LIMIT = 40            # 候補の母集団（24h上昇上位）
 MAX_ALERTS_PER_RUN = 5            # 1回の実行で通知する最大件数（増やす）
 COOLDOWN_HOURS = 1.0              # 同一銘柄のクールダウン（短縮）
 USE_GROQ_COMMENTARY = False       # TrueでGroq簡易解説を付与
-GROQ_MODEL = "llama3-13b"
+GROQ_MODEL = "llama3-7b-v2"
 
 # ====== シグナル・しきい値（過熱検出へ全面移行） ======
 MIN_24H_CHANGE_PCT = 10.0         # 候補最低24h変化率（やや緩め）
