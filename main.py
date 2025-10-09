@@ -294,7 +294,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame) -> bool:
         - RSI(14): {rsi_val:.1f}
         - 50EMA乖離: {dev_pct:.2f}%
         - 出来高倍率: {vol_ratio:.2f}
-        以上の状況の銘柄について、このあと「下落(BOS)が始まる」と予想できる場合は「YES」それ以外の場合は「NO」と答えてください。理由は不要です。
+        以上の状況の銘柄について、このあと数分以内に「下落(BOS)が始まる」と予想できる場合は「YES」それ以外の場合は「NO」と答えてください。理由は不要です。
         """
         res = client.chat.completions.create(
             model=GROQ_MODEL,
