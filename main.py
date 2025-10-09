@@ -571,7 +571,7 @@ def run_analysis():
 
                 # TP1 チェックはENVで無効化可能（デバッグ用）
                 if not DISABLE_TP1_CHECK and tp1_pct > TP1_THRESHOLD:
-                    #logger.info(f"{symbol} skipped: TP1 threshold not met (tp1_pct={tp1_pct:.2f}% > {TP1_THRESHOLD}%)")
+                    logger.info(f"{symbol} skipped: TP1 threshold not met (tp1_pct={tp1_pct:.2f}% > {TP1_THRESHOLD}%)")
                 else:
                     indicators = {
                         "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),
