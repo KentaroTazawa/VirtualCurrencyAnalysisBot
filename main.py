@@ -549,18 +549,18 @@ def run_analysis():
     for t in cooled:
         symbol = t["symbol"]
         current_price = t["last_price"]
-        logger.info(f"Processing {symbol}: price={current_price}, 24h_change={t['change_pct']:.2f}%")
+        #logger.info(f"Processing {symbol}: price={current_price}, 24h_change={t['change_pct']:.2f}%")
         try:
             df_5m = fetch_ohlcv(symbol, interval='5m')
             df_15m = fetch_ohlcv(symbol, interval='15m')
             df_60m = fetch_ohlcv(symbol, interval='60m')
             if any(x is None or x.empty for x in [df_5m, df_15m, df_60m]):
-                logger.warning(f"{symbol} skipped: missing OHLCV data -> 5m:{None if df_5m is None else len(df_5m)}, 15m:{None if df_15m is None else len(df_15m)}, 60m:{None if df_60m is None else len(df_60m)}")
+                #logger.warning(f"{symbol} skipped: missing OHLCV data -> 5m:{None if df_5m is None else len(df_5m)}, 15m:{None if df_15m is None else len(df_15m)}, 60m:{None if df_60m is None else len(df_60m)}")
                 continue
 
             # 非AI BOS と AI BOS の統合判定（AI が有効なら補正）
             score, notes, bos_decision, ai_conf, ai_reason = score_short_setup(symbol, df_5m, df_15m, df_60m)
-            logger.info(f"{symbol} scored: score={score}, bos_decision={bos_decision}, ai_conf={ai_conf:.2f}, notes={notes}")
+            #logger.info(f"{symbol} scored: score={score}, bos_decision={bos_decision}, ai_conf={ai_conf:.2f}, notes={notes}")
 
             # 通知条件: (1) スコア閾値以上 AND ((BOSがある) OR (緩和モードON))
             if score >= SCORE_THRESHOLD and (bos_decision or RELAX_NOTIFICATION_RULES):
@@ -571,7 +571,7 @@ def run_analysis():
 
                 # TP1 チェックはENVで無効化可能（デバッグ用）
                 if not DISABLE_TP1_CHECK and tp1_pct > TP1_THRESHOLD:
-                    logger.info(f"{symbol} skipped: TP1 threshold not met (tp1_pct={tp1_pct:.2f}% > {TP1_THRESHOLD}%)")
+                    #logger.info(f"{symbol} skipped: TP1 threshold not met (tp1_pct={tp1_pct:.2f}% > {TP1_THRESHOLD}%)")
                 else:
                     indicators = {
                         "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),
@@ -592,8 +592,8 @@ def run_analysis():
                         "comment": comment,
                     })
                     logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
-            else:
-                logger.info(f"{symbol} skipped: conditions not met (score {score} / needed {SCORE_THRESHOLD}, bos_decision {bos_decision}, RELAX={RELAX_NOTIFICATION_RULES})")
+            #else:
+            #    logger.info(f"{symbol} skipped: conditions not met (score {score} / needed {SCORE_THRESHOLD}, bos_decision {bos_decision}, RELAX={RELAX_NOTIFICATION_RULES})")
         except Exception:
             logger.error(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
 
