@@ -43,8 +43,8 @@ IMPULSE_PCT_5M = 0.04
 CONSEC_GREEN_1H = 3
 
 # ====== 通知条件用パラメータ ======
-SCORE_THRESHOLD = 5
-TP1_THRESHOLD = -5
+SCORE_THRESHOLD = 3
+TP1_THRESHOLD = -3
 
 # quick debug / operational switches via ENV
 RELAX_NOTIFICATION_RULES = os.getenv("RELAX_NOTIFICATION_RULES", "0") == "1"
