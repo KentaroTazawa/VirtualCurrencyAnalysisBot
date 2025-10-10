@@ -45,7 +45,7 @@ IMPULSE_PCT_5M = 0.04
 CONSEC_GREEN_1H = 3
 
 # ====== 通知条件用パラメータ ======
-SCORE_THRESHOLD = 5
+SCORE_THRESHOLD = 6
 TP1_THRESHOLD = -5
 
 # quick debug / operational switches via ENV
