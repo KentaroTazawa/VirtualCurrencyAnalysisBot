@@ -366,7 +366,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             "Answer ONLY with a JSON object containing keys:\n"
             '  - "decision": "YES" or "NO"\n'
             '  - "confidence": a number between 0.0 and 1.0\n'
-            '  - "reason": short (<=60 chars) explanation\n'
+            '  - "reason": short (<=60 chars) explanation　in Japanese\n'
             "Do NOT include any other text outside the JSON."
         )
 
@@ -407,7 +407,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     notes = []
     bos_decision = False
     ai_conf = 0.0
-    ai_reason = ""
+    ai_reason = "（非AI判定）"
     if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
         score += 1; notes.append("5m直近急騰")
     rsi5 = rsi(df_5m["close"], 14).iloc[-1]
@@ -498,7 +498,7 @@ def groq_commentary(symbol: str, notes: list, plan: dict) -> str:
         return ""
 
 # ========= 通知 =========
-def send_short_signal(symbol: str, current_price: float, score: int, notes: list, plan: dict, change_pct: float, indicators: dict, comment: str):
+def send_short_signal(symbol: str, current_price: float, score: int, notes: list, plan: dict, change_pct: float, indicators: dict, reasons: str, comment: str):
     display_symbol = symbol.replace("_USDT", "")
     ind_text = "\n".join([f"- {k}: {v}" for k, v in indicators.items()]) if indicators else ""
     notes_text = ", ".join(notes)
@@ -512,14 +512,22 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
     web_link = f"https://www.mexc.com/futures/{symbol}"
     open_link_text = f"[Webで開く]({web_link})"
     text = f"""*▶️ トレード画面:* {open_link_text}
-* ショート候補: {display_symbol}* 24h変化率: {change_pct:.2f}% / 現値: {current_price}
+    
+*📉 ショート候補: {display_symbol}*
+- 24h変化率: {change_pct:.2f}%
+- 現値: {current_price}
+
 *スコア:* {score} / 必要 {SCORE_THRESHOLD}
+
 *根拠:* {notes_text}
+- AI判定: {reasons}
+
 *計画 (%表記)*
 - Entry: `{entry}`
 - SL: `{sl_pct:+.2f}%` (risk/qty: `{plan['risk_per_unit']}`)
 - TP1: `{tp1_pct:+.2f}%` ({TP1_R}R)
 - TP2: `{tp2_pct:+.2f}%` ({TP2_R}R, 到達R: {plan['r_multiple_to_tp2']})
+
 *参考指標*
 {ind_text}
 {comment}
@@ -589,6 +597,7 @@ def run_analysis():
                         "current_price": current_price,
                         "change_pct": t["change_pct"],
                         "indicators": indicators,
+                        "reasons": ai_reason,
                         "comment": comment,
                     })
                     logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
@@ -604,7 +613,7 @@ def run_analysis():
         try:
             logger.info(f"Sending alert for {s['symbol']} (score={s['score']}, change={s['change_pct']:.2f}%)")
             send_short_signal(
-                s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"],
+                s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"], s["reasons"],
                 comment=s.get("comment", "")
             )
             NOTIFICATION_CACHE[s["symbol"]] = now
