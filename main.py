@@ -377,6 +377,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             max_tokens=120,
         )
         raw = res.choices[0].message.content
+        raw = {json.dumps(raw, ensure_ascii=False, indent=2)}
         logger.info(f"[{symbol}] Groq raw: {raw[:300]}")
         # ログファイルにも保存（検証用）
         try:
