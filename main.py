@@ -322,12 +322,12 @@ def parse_groq_json_response(raw_text: str):
         logger.warning(f"parse_groq_json_response failed: {e} -- raw:{raw_text[:200]}")
         return False, 0.0, "parse_error"
 
-# ========= BOS 判定（AI） - 改良版: JSON 応答 + confidence を返す（変更） =========
+# ========= BOS 判定（AI） - 改良版（429対応版） =========
 def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
     """
     戻り値: (decision_bool, confidence_float, reason_str)
     - decision_bool: Groq が YES と判断したか
-    - confidence_float: 0.0-1.0 の推定確信度（モデルに依存、プロンプト上で数値を出すよう要請）
+    - confidence_float: 0.0-1.0 の推定確信度
     - reason_str: 短文理由またはフォールバック文字列
     """
     # まずは非AI判定が True ならそのまま True, high confidence で返す
@@ -335,16 +335,18 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
         return True, 0.99, "rule_based_bos"
     if not client:
         return False, 0.0, "groq_not_configured"
+
     try:
-        # 特徴量を短くまとめる（過度に長文にしない）
+        # === 特徴量抽出 ===
         rsi_series = rsi(df_5m["close"], 14)
         rsi_val = float(rsi_series.iloc[-1])
         highs, lows, closes = df_5m["high"], df_5m["low"], df_5m["close"]
-        # recent_gain を直近8本 / 直近20本などで柔軟に
+
         if len(closes) >= 20:
             recent_gain = (closes.iloc[-4] / closes.iloc[-10] - 1.0) * 100
         else:
             recent_gain = (closes.iloc[-4] / closes.iloc[0] - 1.0) * 100
+
         dev_pct = (closes.iloc[-1] / ema(df_5m["close"], EMA_DEV_PERIOD).iloc[-1] - 1.0) * 100
         vol_mean = df_5m["vol"].rolling(20, min_periods=1).mean().iloc[-1]
         vol_ratio = (df_5m["vol"].iloc[-1] / max(1e-9, vol_mean)) if vol_mean > 0 else 0.0
@@ -359,39 +361,49 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             "recent_closes": [round(float(x), 8) for x in recent_closes],
         }
 
-        # プロンプトで JSON だけを返すよう強く指示（最小限の説明を外さない）
         prompt = (
             "You are a concise quantitative trading assistant.\n"
             "Input (JSON): " + json.dumps(payload) + ".\n"
             "Answer ONLY with a JSON object containing keys:\n"
-            '  - "decision": "YES" or "NO"\n'
-            '  - "confidence": a number between 0.0 and 1.0\n'
-            '  - "reason": short (<=60 chars) explanation　in natural Japanese\n'
+            '  - \"decision\": \"YES\" or \"NO\"\n'
+            '  - \"confidence\": a number between 0.0 and 1.0\n'
+            '  - \"reason\": short (<=60 chars) explanation in natural Japanese\n'
             "Do NOT include any other text outside the JSON."
         )
 
         time.sleep(2)
-        res = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=120,
-        )
+
+        try:
+            res = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=120,
+            )
+        except Exception as e:
+            # Groqでのレート制限やHTTP系エラーをキャッチ
+            if "429" in str(e) or "Too Many" in str(e):
+                logger.warning(f"[{symbol}] Groq rate-limited: {e}")
+                return False, 0.0, "groq_rate_limited"
+            else:
+                raise e  # 他の例外は下のexceptで拾う
+
         raw = res.choices[0].message.content
-        #logger.info(f"[{symbol}] Groq raw: {raw[:300]}")
-        # ログファイルにも保存（検証用）
+
+        # === ログ保存 ===
         try:
             with open("ai_responses.log", "a", encoding="utf-8") as f:
-                f.write(f"{datetime.utcnow().isoformat()} | {symbol} | {raw.replace(chr(10),' ')}\n")
+                f.write(f"{datetime.utcnow().isoformat()} | {symbol} | {raw.replace(chr(10), ' ')}\n")
         except Exception:
             logger.debug("Failed to append to ai_responses.log (non-fatal)")
 
         decision_bool, conf, reason = parse_groq_json_response(raw)
         return decision_bool, conf, reason
+
     except Exception as e:
         logger.warning(f"[{symbol}] BOS AI判定失敗: {e}")
         return False, 0.0, "exception"
-
+        
 def count_consecutive_green(df: pd.DataFrame) -> int:
     body = (df["close"] - df["open"]) > 0
     cnt = 0
