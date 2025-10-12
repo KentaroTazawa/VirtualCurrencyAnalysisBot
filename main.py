@@ -367,7 +367,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             "Answer ONLY with a JSON object containing keys:\n"
             '  - \"decision\": \"YES\" or \"NO\"\n'
             '  - \"confidence\": a number between 0.0 and 1.0\n'
-            '  - \"reason\": short (<=60 chars) explanation in natural Japanese\n'
+            '  - \"reason\": 60文字以下の自然な日本語による短い説明\n'
             "Do NOT include any other text outside the JSON."
         )
 
