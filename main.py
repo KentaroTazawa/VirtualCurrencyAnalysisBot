@@ -24,7 +24,7 @@ client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 app = Flask(__name__)
 
 # ====== 運用パラメータ（緩めにして機会を増やす） ======
-TOP_SYMBOLS_LIMIT = 20  # 候補の母集団（24h上昇上位）
+TOP_SYMBOLS_LIMIT = 10  # 候補の母集団（24h上昇上位）
 MAX_ALERTS_PER_RUN = 5  # 1回の実行で通知する最大件数（増やす）
 COOLDOWN_HOURS = 1.0  # 同一銘柄のクールダウン（短縮）
 USE_GROQ_COMMENTARY = False  # TrueでGroq簡易解説を付与
@@ -366,10 +366,11 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             "Answer ONLY with a JSON object containing keys:\n"
             '  - "decision": "YES" or "NO"\n'
             '  - "confidence": a number between 0.0 and 1.0\n'
-            '  - "reason": short (<=60 chars) explanation　in Japanese\n'
+            '  - "reason": short (<=60 chars) explanation　in natural Japanese\n'
             "Do NOT include any other text outside the JSON."
         )
 
+        time.sleep(2)
         res = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
