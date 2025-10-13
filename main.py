@@ -486,8 +486,7 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
     # open_link_text = f"[Webで開く]({web_link})"
     # text = f"""*▶️ トレード画面:* {open_link_text}
     text = f"""*📉 ショート候補: {display_symbol}*
-- 24h変化率: {change_pct:.2f}%
-- 現値: {current_price}
+- 現値: {current_price} / 24h変化率: {change_pct:.2f}%
 
 *スコア:* {score} / 必要 {SCORE_THRESHOLD}
 
