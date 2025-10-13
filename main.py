@@ -525,7 +525,7 @@ def run_analysis():
     for t in cooled:
         symbol = t["symbol"]
         current_price = t["last_price"]
-        logger.info(f"Processing {symbol}: price={current_price}, 24h_change={t['change_pct']:.2f}%")
+        # logger.info(f"Processing {symbol}: price={current_price}, 24h_change={t['change_pct']:.2f}%")
         try:
             df_5m = fetch_ohlcv(symbol, interval='5m')
             df_15m = fetch_ohlcv(symbol, interval='15m')
