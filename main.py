@@ -572,20 +572,20 @@ def run_analysis():
     # for s in scored[:MAX_ALERTS_PER_RUN]:
     for s in scored:
         try:
-            logger.info(f"Sending alert for {s['symbol']} (score={s['score']}, change={s['change_pct']:.2f}%)")
+            # logger.info(f"Sending alert for {s['symbol']} (score={s['score']}, change={s['change_pct']:.2f}%)")
             send_short_signal(
                 s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"], s["reasons"]
             )
             NOTIFICATION_CACHE[s["symbol"]] = now
-            logger.info(f"Notification recorded for {s['symbol']} at {now}")
+            # logger.info(f"Notification recorded for {s['symbol']} at {now}")
             alerts_sent += 1
             time.sleep(1)
         except Exception as e:
             logger.error(f"Failed to send alert for {s['symbol']}: {e}")
 
-    if alerts_sent == 0:
+    # if alerts_sent == 0:
         # logger.info("No alerts sent in this run.")
-        logger.info("=== run_analysis end... no alerts ===")
+        # logger.info("=== run_analysis end... no alerts ===")
 
 @app.route("/")
 def index():
