@@ -43,19 +43,9 @@ VOL_SPIKE_LOOKBACK = 20
 VOL_SPIKE_MULT = 2.5
 IMPULSE_PCT_5M = 0.04
 CONSEC_GREEN_1H = 3
-
-# ====== 通知条件用パラメータ ======
-SCORE_THRESHOLD = 6
-TP1_THRESHOLD = -5
-
-# quick debug / operational switches via ENV
-RELAX_NOTIFICATION_RULES = os.getenv("RELAX_NOTIFICATION_RULES", "0") == "1"
-# If set, do not require BOS to send alerts (useful for debugging / 段階的導入)
-DISABLE_TP1_CHECK = os.getenv("DISABLE_TP1_CHECK", "0") == "1"
-OVERRIDE_SCORE_THRESHOLD = int(os.getenv("OVERRIDE_SCORE_THRESHOLD", "0") or 0)
-
-if OVERRIDE_SCORE_THRESHOLD > 0:
-    SCORE_THRESHOLD = OVERRIDE_SCORE_THRESHOLD
+BOS_SCORE_THRESHOLD = 5  # このスコア以上の場合、BOS判定の対象とする
+SCORE_THRESHOLD = 6      # このスコア以上の場合、通知の対象とする
+TP1_THRESHOLD = -5       # このTP1以下の場合、通知の対象とする
 
 ATR_PERIOD = 14
 SL_ATR_MULT = 0.5
@@ -89,7 +79,7 @@ if not TELEGRAM_ENABLED:
 def mexc_get(path: str, timeout=10):
     url = f"{MEXC_BASE_URL}{path}"
     try:
-        logger.debug(f"HTTP GET: {url}")
+        # logger.debug(f"HTTP GET: {url}")
         res = requests.get(url, timeout=timeout)
         res.raise_for_status()
         return res.json()
@@ -180,7 +170,7 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
     url = f"/api/v1/contract/kline/{symbol}?interval={interval_param}"
     for attempt in range(1, max_retries + 1):
         try:
-            logger.debug(f"Fetching kline for {symbol} interval {interval} (attempt {attempt})")
+            # logger.debug(f"Fetching kline for {symbol} interval {interval} (attempt {attempt})")
             data = mexc_get(url, timeout=timeout_sec)
             if not data.get("success", False):
                 err_msg = data.get("message") or data.get("code") or "Unknown"
@@ -207,7 +197,7 @@ def fetch_ohlcv(symbol, interval='15m', max_retries=3, timeout_sec=15):
                 })
             df = pd.DataFrame(rows).dropna()
             df = df.sort_values("ts").reset_index(drop=True)
-            logger.debug(f"Fetched {len(df)} rows for {symbol} {interval}")
+            # logger.debug(f"Fetched {len(df)} rows for {symbol} {interval}")
             return df
         except Exception as e:
             logger.warning(f"[{symbol}] {interval} fetch attempt {attempt} failed: {e}")
@@ -307,34 +297,31 @@ def parse_groq_json_response(raw_text: str):
             # 直接 YES/NO 単語で返している場合のフォールバック
             txt = raw_text.strip().upper()
             if "YES" in txt and "NO" not in txt:
-                return True, 0.5, "raw_yes_fallback"
+                return True, "raw_yes_fallback"
             if "NO" in txt and "YES" not in txt:
-                return False, 0.5, "raw_no_fallback"
-            return False, 0.0, "ambiguous_no_json"
+                return False, "raw_no_fallback"
+            return False, "ambiguous_no_json"
         obj = json.loads(m.group(0))
         decision = obj.get("decision", "")
-        conf = float(obj.get("confidence", 0.0))
         reason = str(obj.get("reason", "") or "")[:200]
         decision_bool = str(decision).strip().upper() == "YES"
-        conf = max(0.0, min(1.0, conf))
-        return decision_bool, conf, reason
+        return decision_bool, reason
     except Exception as e:
         logger.warning(f"parse_groq_json_response failed: {e} -- raw:{raw_text[:200]}")
-        return False, 0.0, "parse_error"
+        return False, "parse_error"
 
 # ========= BOS 判定（AI） - 改良版（429対応版） =========
 def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
     """
-    戻り値: (decision_bool, confidence_float, reason_str)
+    戻り値: (decision_bool, reason_str)
     - decision_bool: Groq が YES と判断したか
-    - confidence_float: 0.0-1.0 の推定確信度
     - reason_str: 短文理由またはフォールバック文字列
     """
     # まずは非AI判定が True ならそのまま True, high confidence で返す
     if break_of_structure_short(df_5m):
-        return True, 0.99, "rule_based_bos"
+        return True, "rule_based_bos"
     if not client:
-        return False, 0.0, "groq_not_configured"
+        return False, "groq_not_configured"
 
     try:
         # === 特徴量抽出 ===
@@ -366,7 +353,6 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             "Input (JSON): " + json.dumps(payload) + ".\n"
             "Answer ONLY with a JSON object containing keys:\n"
             '  - \"decision\": \"YES\" or \"NO\"\n'
-            '  - \"confidence\": a number between 0.0 and 1.0\n'
             '  - \"reason\": 60文字以下の自然な日本語による短い説明\n'
             "Do NOT include any other text outside the JSON."
         )
@@ -384,25 +370,17 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             # Groqでのレート制限やHTTP系エラーをキャッチ
             if "429" in str(e) or "Too Many" in str(e):
                 logger.warning(f"[{symbol}] Groq rate-limited: {e}")
-                return False, 0.0, "groq_rate_limited"
+                return False, "groq_rate_limited"
             else:
                 raise e  # 他の例外は下のexceptで拾う
 
         raw = res.choices[0].message.content
-
-        # === ログ保存 ===
-        try:
-            with open("ai_responses.log", "a", encoding="utf-8") as f:
-                f.write(f"{datetime.utcnow().isoformat()} | {symbol} | {raw.replace(chr(10), ' ')}\n")
-        except Exception:
-            logger.debug("Failed to append to ai_responses.log (non-fatal)")
-
-        decision_bool, conf, reason = parse_groq_json_response(raw)
-        return decision_bool, conf, reason
+        decision_bool, reason = parse_groq_json_response(raw)
+        return decision_bool, reason
 
     except Exception as e:
         logger.warning(f"[{symbol}] BOS AI判定失敗: {e}")
-        return False, 0.0, "exception"
+        return False, "exception"
         
 def count_consecutive_green(df: pd.DataFrame) -> int:
     body = (df["close"] - df["open"]) > 0
@@ -419,8 +397,8 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     score = 0
     notes = []
     bos_decision = False
-    ai_conf = 0.0
     ai_reason = "（非AI判定）"
+    
     if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
         score += 1; notes.append("5m直近急騰")
     rsi5 = rsi(df_5m["close"], 14).iloc[-1]
@@ -443,24 +421,26 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
 
     # AI 判定をここでスコアに加える（挙動を保ちつつ confidence を利用）
     try:
-        bos_decision, ai_conf, ai_reason = break_of_structure_short_ai(symbol, df_5m)
-        # ログを残す
-        logger.debug(f"{symbol} AI判定 -> decision={bos_decision}, conf={ai_conf:.2f}, reason={ai_reason}")
-        # スコアへの貢献は、AIがYESかつ confidence がある程度高い場合に加点
-        if bos_decision:
-            # 高信頼なら +2、やや低めなら +1（安全側）
-            if ai_conf >= CONF_FOR_ANY_SCORE:
-                score += 2
-                notes.append(f"5m BOS下抜け(Groq判定 conf={ai_conf:.2f})")
-            elif ai_conf >= 0.5:
-                score += 1
-                notes.append(f"5m BOS示唆(Groq弱 conf={ai_conf:.2f})")
-            else:
-                notes.append(f"Groq低信頼({ai_conf:.2f}) 無視")
+
+        # 通知条件: (1) スコア閾値以上
+        if score >= SCORE_THRESHOLD:
+            
+            plan = plan_short_trade(df_5m)
+            entry = plan['entry']
+            tp1 = plan['tp1']
+            tp1_pct = (tp1 - entry) / entry * 100
+    
+            # 通知条件: (2) TP1閾値以下
+            if tp1_pct <= TP1_THRESHOLD:
+        
+                bos_decision, ai_reason = break_of_structure_short_ai(symbol, df_5m)
+                # ログを残す
+                # logger.debug(f"{symbol} AI判定 -> decision={bos_decision}, reason={ai_reason}")
+
     except Exception as e:
         logger.warning(f"{symbol} AI判定で例外: {e}")
 
-    logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
+    # logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
     return score, notes, bos_decision, ai_conf, ai_reason
 
 # ========= 取引計画 =========
@@ -583,39 +563,27 @@ def run_analysis():
             score, notes, bos_decision, ai_conf, ai_reason = score_short_setup(symbol, df_5m, df_15m, df_60m)
             logger.info(f"{symbol} scored: score={score}, bos_decision={bos_decision}, ai_conf={ai_conf:.2f}, notes={notes}")
 
-            # 通知条件: (1) スコア閾値以上 AND ((BOSがある) OR (緩和モードON))
-            if score >= SCORE_THRESHOLD and (bos_decision or RELAX_NOTIFICATION_RULES):
-                plan = plan_short_trade(df_5m)
-                entry = plan['entry']
-                tp1 = plan['tp1']
-                tp1_pct = (tp1 - entry) / entry * 100
-
-                # TP1 チェックはENVで無効化可能（デバッグ用）
-                if not DISABLE_TP1_CHECK and tp1_pct > TP1_THRESHOLD:
-                    logger.info(f"{symbol} skipped: TP1 threshold not met (tp1_pct={tp1_pct:.2f}% > {TP1_THRESHOLD}%)")
-                else:
-                    indicators = {
-                        "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),
-                        "RSI(15m)": round(rsi(df_15m["close"], 14).iloc[-1], 2),
-                        "+乖離(5m,EMA50)": round((df_5m["close"].iloc[-1] / ema(df_5m["close"], EMA_DEV_PERIOD).iloc[-1] - 1) * 100, 2),
-                        "ATR(5m)": round(atr(df_5m, ATR_PERIOD).iloc[-1], 6),
-                        "出来高(5m)最新/平均": round(df_5m["vol"].iloc[-1] / max(1e-9, df_5m["vol"].rolling(VOL_SPIKE_LOOKBACK, min_periods=1).mean().iloc[-1]), 2),
-                    }
-                    comment = groq_commentary(symbol, notes, plan) if USE_GROQ_COMMENTARY else ""
-                    scored.append({
-                        "symbol": symbol,
-                        "score": score,
-                        "notes": notes,
-                        "plan": plan,
-                        "current_price": current_price,
-                        "change_pct": t["change_pct"],
-                        "indicators": indicators,
-                        "reasons": ai_reason,
-                        "comment": comment,
-                    })
-                    logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
-            else:
-                logger.info(f"{symbol} skipped: conditions not met (score {score} / needed {SCORE_THRESHOLD}, bos_decision {bos_decision}, RELAX={RELAX_NOTIFICATION_RULES})")
+            if bos_decision:
+            
+                indicators = {
+                    "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),
+                    "RSI(15m)": round(rsi(df_15m["close"], 14).iloc[-1], 2),
+                    "+乖離(5m,EMA50)": round((df_5m["close"].iloc[-1] / ema(df_5m["close"], EMA_DEV_PERIOD).iloc[-1] - 1) * 100, 2),
+                    "ATR(5m)": round(atr(df_5m, ATR_PERIOD).iloc[-1], 6),
+                    "出来高(5m)最新/平均": round(df_5m["vol"].iloc[-1] / max(1e-9, df_5m["vol"].rolling(VOL_SPIKE_LOOKBACK, min_periods=1).mean().iloc[-1]), 2),
+                }
+                scored.append({
+                    "symbol": symbol,
+                    "score": score,
+                    "notes": notes,
+                    "plan": plan,
+                    "current_price": current_price,
+                    "change_pct": t["change_pct"],
+                    "indicators": indicators,
+                    "reasons": ai_reason,
+                })
+                logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
+            
         except Exception:
             logger.error(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
 
