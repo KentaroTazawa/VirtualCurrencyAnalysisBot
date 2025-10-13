@@ -538,7 +538,7 @@ def run_analysis():
 
             # 非AI BOS と AI BOS の統合判定（AI が有効なら補正）
             score, notes, bos_decision, bos_reason, plan = score_short_setup(symbol, df_5m, df_15m, df_60m)
-            logger.info(f"{symbol} score={score}, bos_decision={bos_decision}")
+            logger.info(f"{symbol:<15} score={score:<2}, bos_decision={bos_decision:<5}")
 
             if bos_decision:
             
