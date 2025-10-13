@@ -351,7 +351,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
             "Input (JSON): " + json.dumps(payload) + ".\n"
             "Answer ONLY with a JSON object containing keys:\n"
             '  - \"decision\": \"YES\" or \"NO\"\n'
-            '  - \"reason\": 60文字以下の自然な日本語による短い説明\n'
+            '  - \"reason\": 60文字以下の自然な日本語による短い根拠の説明\n'
             "Do NOT include any other text outside the JSON."
         )
 
@@ -395,7 +395,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     score = 0
     notes = []
     bos_decision = False
-    ai_reason = "（非AI判定）"
+    bos_reason = "（非AI判定）"
     
     if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
         score += 1; notes.append("5m直近急騰")
@@ -431,15 +431,16 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
             # 通知条件: (2) TP1閾値以下
             if tp1_pct <= TP1_THRESHOLD:
         
-                bos_decision, ai_reason = break_of_structure_short_ai(symbol, df_5m)
+                bos_decision, bos_reason = break_of_structure_short_ai(symbol, df_5m)
+                logger.info(f"{symbol} bos_reason={bos_reason}")
                 # ログを残す
-                # logger.debug(f"{symbol} AI判定 -> decision={bos_decision}, reason={ai_reason}")
+                # logger.debug(f"{symbol} AI判定 -> decision={bos_decision}, reason={bos_reason}")
 
     except Exception as e:
         logger.warning(f"{symbol} AI判定で例外: {e}")
 
     # logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
-    return score, notes, bos_decision, ai_reason
+    return score, notes, bos_decision, bos_reason
 
 # ========= 取引計画 =========
 def plan_short_trade(df_5m: pd.DataFrame):
@@ -535,7 +536,7 @@ def run_analysis():
                 continue
 
             # 非AI BOS と AI BOS の統合判定（AI が有効なら補正）
-            score, notes, bos_decision, ai_reason = score_short_setup(symbol, df_5m, df_15m, df_60m)
+            score, notes, bos_decision, bos_reason = score_short_setup(symbol, df_5m, df_15m, df_60m)
             logger.info(f"{symbol} score={score}, bos_decision={bos_decision}")
 
             if bos_decision:
@@ -555,7 +556,7 @@ def run_analysis():
                     "current_price": current_price,
                     "change_pct": t["change_pct"],
                     "indicators": indicators,
-                    "reasons": ai_reason,
+                    "reasons": bos_reason,
                 })
                 logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
             
