@@ -130,7 +130,7 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
     try:
         data = mexc_get("/api/v1/contract/ticker")
         tickers = data.get("data", [])
-        logger.info(f"Fetched {len(tickers)} tickers from /ticker")
+        # logger.info(f"Fetched {len(tickers)} tickers from /ticker")
         filtered = []
         for t in tickers:
             try:
@@ -142,7 +142,7 @@ def get_top_symbols_by_24h_change(limit=TOP_SYMBOLS_LIMIT):
             except Exception:
                 continue
         filtered.sort(key=lambda x: x["change_pct"], reverse=True)
-        logger.info(f"{len(filtered)} symbols passed 24h change filter (>{MIN_24H_CHANGE_PCT}%)")
+        # logger.info(f"{len(filtered)} symbols passed 24h change filter (>{MIN_24H_CHANGE_PCT}%)")
         return filtered[:limit]
     except Exception as e:
         send_error_to_telegram(f"MEXC 急上昇銘柄取得エラー:\n{str(e)}")
@@ -153,7 +153,7 @@ def get_available_contract_symbols():
         data = mexc_get("/api/v1/contract/detail")
         arr = data.get("data", []) or []
         symbols = {it.get("symbol") for it in arr if it.get("symbol")}
-        logger.info(f"Fetched {len(symbols)} available contract symbols")
+        # logger.info(f"Fetched {len(symbols)} available contract symbols")
         return symbols
     except Exception as e:
         send_error_to_telegram(f"先物銘柄一覧取得失敗:\n{str(e)}")
@@ -509,7 +509,7 @@ def run_analysis():
     available = get_available_contract_symbols()
     before_filter_count = len(top_tickers)
     top_tickers = [t for t in top_tickers if t["symbol"] in available]
-    logger.info(f"Top tickers: {before_filter_count} -> {len(top_tickers)} after availability filter")
+    # logger.info(f"Top tickers: {before_filter_count} -> {len(top_tickers)} after availability filter")
 
     now = datetime.utcnow()
     cooled = []
@@ -519,7 +519,7 @@ def run_analysis():
             logger.info(f"Skipping {t['symbol']} due to cooldown. last_notified={last_time}")
             continue
         cooled.append(t)
-    logger.info(f"{len(cooled)} symbols remain after cooldown")
+    # logger.info(f"{len(cooled)} symbols remain after cooldown")
 
     scored = []
     for t in cooled:
@@ -536,7 +536,7 @@ def run_analysis():
 
             # 非AI BOS と AI BOS の統合判定（AI が有効なら補正）
             score, notes, bos_decision, ai_reason = score_short_setup(symbol, df_5m, df_15m, df_60m)
-            logger.info(f"{symbol} scored: score={score}, bos_decision={bos_decision}, notes={notes}")
+            logger.info(f"{symbol} score={score}, bos_decision={bos_decision}")
 
             if bos_decision:
             
