@@ -482,11 +482,10 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
     sl_pct = (sl - entry) / entry * 100
     tp1_pct = (tp1 - entry) / entry * 100
     tp2_pct = (tp2 - entry) / entry * 100
-    web_link = f"https://www.mexc.com/futures/{symbol}"
-    open_link_text = f"[Webで開く]({web_link})"
-    text = f"""*▶️ トレード画面:* {open_link_text}
-    
-*📉 ショート候補: {display_symbol}*
+    # web_link = f"https://www.mexc.com/futures/{symbol}"
+    # open_link_text = f"[Webで開く]({web_link})"
+    # text = f"""*▶️ トレード画面:* {open_link_text}
+    text = f"""*📉 ショート候補: {display_symbol}*
 - 24h変化率: {change_pct:.2f}%
 - 現値: {current_price}
 
