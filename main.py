@@ -582,7 +582,8 @@ def run_analysis():
             logger.error(f"Failed to send alert for {s['symbol']}: {e}")
 
     if alerts_sent == 0:
-        logger.info("No alerts sent in this run.")
+        # logger.info("No alerts sent in this run.")
+        logger.info("=== run_analysis end... no alerts ===")
 
 @app.route("/")
 def index():
