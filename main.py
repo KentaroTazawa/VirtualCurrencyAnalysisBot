@@ -27,7 +27,6 @@ app = Flask(__name__)
 TOP_SYMBOLS_LIMIT = 10  # 候補の母集団（24h上昇上位）
 MAX_ALERTS_PER_RUN = 5  # 1回の実行で通知する最大件数（増やす）
 COOLDOWN_HOURS = 1.0  # 同一銘柄のクールダウン（短縮）
-USE_GROQ_COMMENTARY = False  # TrueでGroq簡易解説を付与
 GROQ_MODEL = "llama-3.1-8b-instant"
 
 # ====== シグナル・しきい値（過熱検出へ全面移行） ======
@@ -467,30 +466,8 @@ def plan_short_trade(df_5m: pd.DataFrame):
         "r_multiple_to_tp2": round(r_multiple, 2),
     }
 
-# ========= Groq（任意の短文解説） =========
-def groq_commentary(symbol: str, notes: list, plan: dict) -> str:
-    if not (USE_GROQ_COMMENTARY and client):
-        return ""
-    try:
-        now_jst = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
-        brief = (
-            f"{symbol} のショート候補。根拠: {', '.join(notes)}。\n"
-            f"想定: エントリ {plan['entry']}, SL {plan['sl']}, TP1 {plan['tp1']}, TP2 {plan['tp2']}。\n"
-            f"{now_jst} JST"
-        )
-        res = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": f"日本語で、以下を80〜140文字で簡潔に要約して: {brief}"}],
-            temperature=0.2,
-            max_tokens=140,
-        )
-        return res.choices[0].message.content.strip()
-    except Exception as e:
-        send_error_to_telegram(f"Groqエラー: {str(e)}")
-        return ""
-
 # ========= 通知 =========
-def send_short_signal(symbol: str, current_price: float, score: int, notes: list, plan: dict, change_pct: float, indicators: dict, reasons: str, comment: str):
+def send_short_signal(symbol: str, current_price: float, score: int, notes: list, plan: dict, change_pct: float, indicators: dict, reasons: str):
     display_symbol = symbol.replace("_USDT", "")
     ind_text = "\n".join([f"- {k}: {v}" for k, v in indicators.items()]) if indicators else ""
     notes_text = ", ".join(notes)
@@ -522,7 +499,6 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
 
 *参考指標*
 {ind_text}
-{comment}
 """
     tg_send_md(text)
 
@@ -593,8 +569,7 @@ def run_analysis():
         try:
             logger.info(f"Sending alert for {s['symbol']} (score={s['score']}, change={s['change_pct']:.2f}%)")
             send_short_signal(
-                s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"], s["reasons"],
-                comment=s.get("comment", "")
+                s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"], s["reasons"]
             )
             NOTIFICATION_CACHE[s["symbol"]] = now
             logger.info(f"Notification recorded for {s['symbol']} at {now}")
@@ -616,10 +591,4 @@ def run_analysis_route():
     return "分析完了", 200
 
 if __name__ == "__main__":
-    # optional quick test: if env says so, attempt to send a test message (helps debug render env)
-    if os.getenv("SEND_TELEGRAM_TEST_ON_STARTUP", "0") == "1":
-        try:
-            tg_send_md("VirtualCurrencyAnalysisBot 起動テストメッセージ")
-        except Exception as e:
-            logger.error(f"Startup test message failed: {e}")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
