@@ -373,6 +373,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
                 raise e  # 他の例外は下のexceptで拾う
 
         raw = res.choices[0].message.content
+        logger.info(f"{symbol} raw={raw}")
         decision_bool, reason = parse_groq_json_response(raw)
         return decision_bool, reason
 
