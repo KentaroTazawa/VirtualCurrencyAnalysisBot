@@ -25,7 +25,7 @@ app = Flask(__name__)
 
 # ====== 運用パラメータ（緩めにして機会を増やす） ======
 TOP_SYMBOLS_LIMIT = 10  # 候補の母集団（24h上昇上位）
-MAX_ALERTS_PER_RUN = 5  # 1回の実行で通知する最大件数（増やす）
+# MAX_ALERTS_PER_RUN = 5  # 1回の実行で通知する最大件数（増やす）
 COOLDOWN_HOURS = 1.0  # 同一銘柄のクールダウン（短縮）
 GROQ_MODEL = "llama-3.1-8b-instant"
 
@@ -565,9 +565,10 @@ def run_analysis():
             logger.error(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
 
     scored.sort(key=lambda x: (x["score"], x["change_pct"]), reverse=True)
-    logger.info(f"{len(scored)} total candidates after scoring; preparing to send up to {MAX_ALERTS_PER_RUN} alerts")
+    # logger.info(f"{len(scored)} total candidates after scoring; preparing to send up to {MAX_ALERTS_PER_RUN} alerts")
     alerts_sent = 0
-    for s in scored[:MAX_ALERTS_PER_RUN]:
+    # for s in scored[:MAX_ALERTS_PER_RUN]:
+    for s in scored:
         try:
             logger.info(f"Sending alert for {s['symbol']} (score={s['score']}, change={s['change_pct']:.2f}%)")
             send_short_signal(
