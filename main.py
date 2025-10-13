@@ -439,7 +439,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
         logger.warning(f"{symbol} AI判定で例外: {e}")
 
     # logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
-    return score, notes, bos_decision, ai_conf, ai_reason
+    return score, notes, bos_decision, ai_reason
 
 # ========= 取引計画 =========
 def plan_short_trade(df_5m: pd.DataFrame):
@@ -535,8 +535,8 @@ def run_analysis():
                 continue
 
             # 非AI BOS と AI BOS の統合判定（AI が有効なら補正）
-            score, notes, bos_decision, ai_conf, ai_reason = score_short_setup(symbol, df_5m, df_15m, df_60m)
-            logger.info(f"{symbol} scored: score={score}, bos_decision={bos_decision}, ai_conf={ai_conf:.2f}, notes={notes}")
+            score, notes, bos_decision, ai_reason = score_short_setup(symbol, df_5m, df_15m, df_60m)
+            logger.info(f"{symbol} scored: score={score}, bos_decision={bos_decision}, notes={notes}")
 
             if bos_decision:
             
