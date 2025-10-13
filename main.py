@@ -493,17 +493,18 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
 *スコア:* {score} / 必要 {SCORE_THRESHOLD}
 
 *根拠:* {notes_text}
+
 - AI判定: {reasons}
 
 *計画 (%表記)*
 - Entry: `{entry}`
-- SL: `{sl_pct:+.2f}%` (risk/qty: `{plan['risk_per_unit']}`)
-- TP1: `{tp1_pct:+.2f}%` ({TP1_R}R)
-- TP2: `{tp2_pct:+.2f}%` ({TP2_R}R, 到達R: {plan['r_multiple_to_tp2']})
-
-*参考指標*
-{ind_text}
+- SL: `{sl_pct:+.2f}%` ({sl})
+- TP1: `{tp1_pct:+.2f}%` ({tp1})
+- TP2: `{tp2_pct:+.2f}%` ({tp2})
 """
+# *参考指標*
+# {ind_text}
+# """
     tg_send_md(text)
 
 # ========= メイン =========
