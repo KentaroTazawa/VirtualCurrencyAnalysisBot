@@ -396,7 +396,6 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     notes = []
     bos_decision = False
     bos_reason = "（非AI判定）"
-  　plan　= ""
     
     if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
         score += 1; notes.append("5m直近急騰")
@@ -421,14 +420,14 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     # AI 判定をここでスコアに加える（挙動を保ちつつ confidence を利用）
     try:
 
+        plan = plan_short_trade(df_5m)
+        entry = plan['entry']
+        tp1 = plan['tp1']
+        tp1_pct = (tp1 - entry) / entry * 100
+      
         # 通知条件: (1) スコア閾値以上
         if score >= SCORE_THRESHOLD:
-            
-            plan = plan_short_trade(df_5m)
-            entry = plan['entry']
-            tp1 = plan['tp1']
-            tp1_pct = (tp1 - entry) / entry * 100
-    
+
             # 通知条件: (2) TP1閾値以下
             if tp1_pct <= TP1_THRESHOLD:
         
