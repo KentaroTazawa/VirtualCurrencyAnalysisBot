@@ -433,7 +433,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
             if tp1_pct <= TP1_THRESHOLD:
         
                 bos_decision, bos_reason = break_of_structure_short_ai(symbol, df_5m)
-                logger.info(f"{symbol} bos_reason={bos_reason}")
+                # logger.info(f"{symbol} bos_reason={bos_reason}")
                 # ログを残す
                 # logger.debug(f"{symbol} AI判定 -> decision={bos_decision}, reason={bos_reason}")
 
@@ -441,7 +441,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
         logger.warning(f"{symbol} AI判定で例外: {e}")
 
     # logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
-    logger.info(f"{symbol:<15} | score={score:<2} | tp1_pct={tp1_pct:>7.2f} | bos_decision={str(bos_decision):<5}")
+    logger.info(f"{symbol:<15} | score={score:<2} | tp1={tp1_pct:>6.2f} | bos={str(bos_decision):<5}")
     return score, notes, bos_decision, bos_reason, plan
 
 # ========= 取引計画 =========
