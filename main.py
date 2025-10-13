@@ -347,11 +347,12 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
         }
 
         prompt = (
-            "You are a concise quantitative trading assistant.\n"
+            "You are a skilled quantitative trading analyst specializing in short-term cryptocurrency trends.\n"
+            "Analyze the following market data and determine whether the token is likely to experience a short-term price **decline** soon (within the next several minutes).\n"
             "Input (JSON): " + json.dumps(payload) + ".\n"
             "Answer ONLY with a JSON object containing keys:\n"
-            '  - \"decision\": \"YES\" or \"NO\"\n'
-            '  - \"reason\": 60文字以下の自然な日本語による短い根拠の説明\n'
+            '  - \"decision\": \"YES\"(high likelihood of a short-term drop) or \"NO\"(low likelihood of a short-term drop)\n'
+            '  - \"reason\": 60文字以下の自然な日本語による根拠の説明\n'
             "Do NOT include any other text outside the JSON."
         )
 
