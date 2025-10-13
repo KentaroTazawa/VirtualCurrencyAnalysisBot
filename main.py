@@ -396,6 +396,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     notes = []
     bos_decision = False
     bos_reason = "（非AI判定）"
+  　plan　= ""
     
     if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
         score += 1; notes.append("5m直近急騰")
@@ -440,7 +441,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
         logger.warning(f"{symbol} AI判定で例外: {e}")
 
     # logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
-    return score, notes, bos_decision, bos_reason
+    return score, notes, bos_decision, bos_reason, plan
 
 # ========= 取引計画 =========
 def plan_short_trade(df_5m: pd.DataFrame):
@@ -536,7 +537,7 @@ def run_analysis():
                 continue
 
             # 非AI BOS と AI BOS の統合判定（AI が有効なら補正）
-            score, notes, bos_decision, bos_reason = score_short_setup(symbol, df_5m, df_15m, df_60m)
+            score, notes, bos_decision, bos_reason, plan = score_short_setup(symbol, df_5m, df_15m, df_60m)
             logger.info(f"{symbol} score={score}, bos_decision={bos_decision}")
 
             if bos_decision:
