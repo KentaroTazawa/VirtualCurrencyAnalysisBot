@@ -373,7 +373,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
                 raise e  # 他の例外は下のexceptで拾う
 
         raw = res.choices[0].message.content
-        logger.info(f"{symbol} raw={raw}")
+        #logger.info(f"{symbol} raw={raw}")
         decision_bool, reason = parse_groq_json_response(raw)
         return decision_bool, reason
 
@@ -560,7 +560,7 @@ def run_analysis():
                     "indicators": indicators,
                     "reasons": bos_reason,
                 })
-                logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
+                #logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
             
         except Exception:
             logger.error(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
