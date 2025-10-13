@@ -42,8 +42,8 @@ VOL_SPIKE_LOOKBACK = 20
 VOL_SPIKE_MULT = 2.5
 IMPULSE_PCT_5M = 0.04
 CONSEC_GREEN_1H = 3
-SCORE_THRESHOLD = 4      # このスコア以上の場合、通知の対象とする
-TP1_THRESHOLD = -4       # このTP1以下の場合、通知の対象とする
+SCORE_THRESHOLD = 5      # このスコア以上の場合、通知の対象とする
+TP1_THRESHOLD = -5       # このTP1以下の場合、通知の対象とする
 
 ATR_PERIOD = 14
 SL_ATR_MULT = 0.5
