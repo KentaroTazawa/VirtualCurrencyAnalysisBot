@@ -24,7 +24,7 @@ client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 app = Flask(__name__)
 
 # ====== 運用パラメータ（緩めにして機会を増やす） ======
-TOP_SYMBOLS_LIMIT = 10  # 候補の母集団（24h上昇上位）
+TOP_SYMBOLS_LIMIT = 30  # 候補の母集団（24h上昇上位）
 # MAX_ALERTS_PER_RUN = 5  # 1回の実行で通知する最大件数（増やす）
 COOLDOWN_HOURS = 1.0  # 同一銘柄のクールダウン（短縮）
 GROQ_MODEL = "llama-3.1-8b-instant"
