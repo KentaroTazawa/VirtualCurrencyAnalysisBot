@@ -443,7 +443,8 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
 
     # logger.debug(f"{symbol} scoring -> score={score}, notes={notes}")
     # logger.info(f"{symbol:<15} | score={score:<2} | tp1={tp1_pct:>6.2f} | bos={str(bos_decision):<5}")
-    logger.info(f"{symbol:<15} score={score:<2} tp1={tp1_pct:>6.2f}")
+    # logger.info(f"{symbol:<15} score={score:<2} tp1={tp1_pct:>6.2f}")
+    logger.info(f"{symbol.replace('_USDT', ''):<12} score={score:<2} tp1={tp1_pct:>6.2f}")
     return score, notes, bos_decision, bos_reason, plan
 
 # ========= 取引計画 =========
