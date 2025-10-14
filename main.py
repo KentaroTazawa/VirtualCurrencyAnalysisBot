@@ -491,15 +491,15 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
 
 *スコア:* {score} / 必要 {SCORE_THRESHOLD}
 
-*根拠:* {notes_text}
-
-- AI判定: {reasons}
-
-*計画 (%表記)*
+*予測 (%表記)*
 - Entry: `{entry}`
 - SL: `{sl_pct:+.2f}%` ({sl})
 - TP1: `{tp1_pct:+.2f}%` ({tp1})
 - TP2: `{tp2_pct:+.2f}%` ({tp2})
+
+- AI判定: {reasons}
+
+*根拠:* {notes_text}
 """
 # *参考指標*
 # {ind_text}
