@@ -427,16 +427,14 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
         tp1 = plan['tp1']
         tp1_pct = (tp1 - entry) / entry * 100
       
-        # 通知条件: (1) スコア閾値以上
-        if score >= SCORE_THRESHOLD:
-
-            # 通知条件: (2) TP1閾値以下
-            if tp1_pct <= TP1_THRESHOLD:
+        # 通知条件: (1) スコア閾値以上, (2) TP1閾値以下
+        # if score >= SCORE_THRESHOLD and tp1_pct <= TP1_THRESHOLD:
+        if score >= 11 or  tp1_pct <= -9:
         
-                bos_decision, bos_reason = break_of_structure_short_ai(symbol, df_5m)
-                # logger.info(f"{symbol} bos_reason={bos_reason}")
-                # ログを残す
-                # logger.debug(f"{symbol} AI判定 -> decision={bos_decision}, reason={bos_reason}")
+            bos_decision, bos_reason = break_of_structure_short_ai(symbol, df_5m)
+            # logger.info(f"{symbol} bos_reason={bos_reason}")
+            # ログを残す
+            # logger.debug(f"{symbol} AI判定 -> decision={bos_decision}, reason={bos_reason}")
 
     except Exception as e:
         logger.warning(f"{symbol} AI判定で例外: {e}")
