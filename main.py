@@ -593,6 +593,17 @@ def index():
 
 @app.route("/run_analysis", methods=["GET", "HEAD"])
 def run_analysis_route():
+    secret = request.args.get("secret")
+    run_secret = os.getenv("RUN_SECRET")
+
+    if not run_secret:
+        logger.error("RUN_SECRET is not set in environment variables.")
+        return "サーバー設定エラー: RUN_SECRET 未設定", 500
+
+    if secret != run_secret:
+        logger.warning(f"Unauthorized access attempt detected: secret={secret}")
+        return "認証エラー: secretが無効です", 403
+      
     run_analysis()
     return "分析完了", 200
 
