@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
-from flask import Flask
+from flask import Flask, request
 from groq import Groq
 from dotenv import load_dotenv
 
