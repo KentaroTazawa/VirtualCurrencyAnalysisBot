@@ -1,4 +1,4 @@
-# main.py (修正版: Groq JSON応答 + confidence利用 + 最小変更で緩和/デバッグ切替を追加)
+# main.py (修正版: Groq JSON応答 + 最小変更で緩和/デバッグ切替を追加)
 import os
 import time
 import traceback
@@ -57,10 +57,6 @@ BOS_RECENT_GAIN_THRESHOLD = 0.02  # 2% に緩める（元は0.03）
 BOS_RSI_MAX = 65
 BOS_REQUIRE_VOLUME = True
 BOS_VOL_MULT = 1.8
-
-# ========= AI confidence 統合ルール用閾値 ========
-CONF_FOR_ANY_SCORE = 0.75
-CONF_FOR_LOW_SCORE = 0.90
 
 # ========= ロガー =========
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -286,8 +282,8 @@ def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
 def parse_groq_json_response(raw_text: str):
     """
     raw_text から最初の JSON オブジェクトを抽出して parse -> dict を返す。
-    期待するキー: decision (YES/NO), confidence (0-1), reason (str)
-    戻り値: (decision_bool, confidence_float, reason_str)
+    期待するキー: decision (YES/NO), reason (str)
+    戻り値: (decision_bool, reason_str)
     """
     try:
         m = re.search(r'\{.*\}', raw_text, re.S)
@@ -315,7 +311,7 @@ def break_of_structure_short_ai(symbol: str, df_5m: pd.DataFrame):
     - decision_bool: Groq が YES と判断したか
     - reason_str: 短文理由またはフォールバック文字列
     """
-    # まずは非AI判定が True ならそのまま True, high confidence で返す
+    # まずは非AI判定が True ならそのまま True で返す
     if break_of_structure_short(df_5m):
         return True, "rule_based_bos"
     if not client:
@@ -399,6 +395,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     bos_decision = False
     bos_reason = "（非AI判定）"
     plan = {"entry": None, "tp1": None}
+    tp1_pct = 0
     
     if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
         score += 1; notes.append("5m直近急騰")
@@ -420,7 +417,7 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     if count_consecutive_green(df_60m) >= CONSEC_GREEN_1H:
         score += 1; notes.append(f"1h連続陽線≥{CONSEC_GREEN_1H}")
 
-    # AI 判定をここでスコアに加える（挙動を保ちつつ confidence を利用）
+    # AI 判定をここでスコアに加える
     try:
 
         plan = plan_short_trade(df_5m)
