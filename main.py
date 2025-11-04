@@ -43,7 +43,7 @@ VOL_SPIKE_LOOKBACK = 20
 VOL_SPIKE_MULT = 2.5
 IMPULSE_PCT_5M = 0.04
 CONSEC_GREEN_1H = 3
-#SCORE_THRESHOLD = 6      # このスコア以上の場合、通知の対象とする
+SCORE_THRESHOLD = 6      # このスコア以上の場合、通知の対象とする
 TP1_THRESHOLD = -6       # このTP1以下の場合、通知の対象とする
 
 ATR_PERIOD = 14
@@ -454,107 +454,6 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
     logger.info(f"{symbol.replace('_USDT', ''):<12} score={score:<2} tp1={tp1_pct:>6.2f}")
     return score, notes, bos_decision, bos_reason, plan
 
-# ========= ロング（逆方向）用 AI 判定 =========
-def break_of_structure_long_ai(symbol: str, df_5m: pd.DataFrame):
-    if not client:
-        return False, "groq_not_configured"
-    try:
-        rsi_val = float(rsi(df_5m["close"], 14).iloc[-1])
-        closes = df_5m["close"]
-        ema_dev = (closes.iloc[-1] / ema(closes, EMA_DEV_PERIOD).iloc[-1] - 1.0) * 100
-        vol_mean = df_5m["vol"].rolling(20, min_periods=1).mean().iloc[-1]
-        vol_ratio = df_5m["vol"].iloc[-1] / max(1e-9, vol_mean)
-        payload = {
-            "symbol": symbol,
-            "rsi14": round(rsi_val, 2),
-            "ema50_dev_pct": round(ema_dev, 2),
-            "vol_ratio": round(vol_ratio, 2),
-            "recent_closes": [round(float(x), 8) for x in closes.iloc[-8:].tolist()],
-        }
-        prompt = (
-            "You are a skilled quantitative trading analyst specializing in short-term cryptocurrency trends.\n"
-            "Analyze the following market data and determine whether the token is likely to experience a short-term price **increase** soon (within the next several minutes).\n"
-            "Input (JSON): " + json.dumps(payload) + ".\n"
-            "Answer ONLY with a JSON object containing keys:\n"
-            '  - \"decision\": \"YES\"(high likelihood of a short-term rise) or \"NO\"(low likelihood of a short-term rise)\n'
-            '  - \"reason\": 60文字以下の自然な日本語による根拠の説明\n'
-            "Do NOT include any other text outside the JSON."
-        )
-        res = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=120,
-        )
-        raw = res.choices[0].message.content
-        return parse_groq_json_response(raw)
-    except Exception as e:
-        logger.warning(f"[{symbol}] BOS AIロング判定失敗: {e}")
-        return False, "exception"
-
-# ========= ロングスコアリング =========
-def score_long_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df_60m: pd.DataFrame):
-    score = 0
-    notes = []
-    bos_decision = False
-    bos_reason = "（非AI判定）"
-
-    if recent_impulse(df_5m, bars=6, pct=IMPULSE_PCT_5M):
-        score += 0  # 急騰中はロングに不向き
-    rsi5 = rsi(df_5m["close"], 14).iloc[-1]
-    rsi15 = rsi(df_15m["close"], 14).iloc[-1]
-    if rsi5 <= 28.0:
-        score += 2; notes.append(f"RSI5m低位({rsi5:.1f})")
-    if rsi15 <= 30.0:
-        score += 2; notes.append(f"RSI15m低位({rsi15:.1f})")
-    _, _, lower5 = bollinger_bands(df_5m["close"], BB_PERIOD, BB_K)
-    if df_5m["close"].iloc[-1] < lower5.iloc[-1] * (1.0 - BB_UPPER_BREAK_PCT):
-        score += 2; notes.append("BB下限割れ")
-    ema50_5 = ema(df_5m["close"], EMA_DEV_PERIOD)
-    dev_pct = (df_5m["close"].iloc[-1] / ema50_5.iloc[-1] - 1.0) * 100.0
-    if dev_pct <= -EMA_DEV_MIN_PCT:
-        score += 2; notes.append(f"{dev_pct:.1f}% 50EMA乖離(下向)")
-    if volume_spike(df_5m["vol"], VOL_SPIKE_LOOKBACK, VOL_SPIKE_MULT):
-        score += 1; notes.append("出来高増加")
-    if count_consecutive_green(df_60m) <= 0:
-        score += 1; notes.append("1h連続陰線")
-
-    # AI 判定をここでスコアに加える
-    try:
-
-        plan = plan_short_trade(df_5m)
-        entry = plan['entry']
-        tp1 = plan['tp1']
-
-        # 安全な除算関数
-        def safe_div(a, b):
-            try:
-                if b == 0 or b is None or pd.isna(b):
-                    return float("nan")
-                return a / b
-            except Exception:
-                return float("nan")
-
-        tp1_pct = safe_div(tp1 - entry, entry) * 100 if entry else float("nan")
-      
-        # 通知条件: (1) スコア閾値以上, (2) TP1閾値以下
-        if (score >= 11 and tp1_pct <= -7.5) or (score >= 9 and tp1_pct <= -8.5):
-
-            bos_decision, bos_reason = break_of_structure_long_ai(symbol, df_5m)
-
-    except Exception as e:
-        logger.warning(f"{symbol} AI判定で例外: {e}")
-
-    logger.info(f"{symbol.replace('_USDT', ''):<12} score={score:<2} tp1={tp1_pct:>6.2f}")
-  
-    return {
-        "score": score,
-        "notes": notes,
-        "bos_decision": bos_decision,
-        "bos_reason": bos_reason,
-        "plan": plan
-    }
-
 # ========= 取引計画 =========
 def plan_short_trade(df_5m: pd.DataFrame):
     close = df_5m["close"]
@@ -599,42 +498,7 @@ def send_short_signal(symbol: str, current_price: float, score: int, notes: list
     text = f"""*📉 ショート候補:* [{display_symbol}]({web_link})
 - 現値: {current_price} / 24h変化率: {change_pct:.2f}%
 
-*スコア:* {score}
-
-*予測 (%表記)*
-- Entry: `{entry}`
-- SL: `{sl_pct:+.2f}%` ({sl})
-- TP1: `{tp1_pct:+.2f}%` ({tp1})
-- TP2: `{tp2_pct:+.2f}%` ({tp2})
-
-- AI判定: {reasons}
-
-*根拠:* {notes_text}
-"""
-# *参考指標*
-# {ind_text}
-# """
-    tg_send_md(text)
-
-def send_long_signal(symbol: str, current_price: float, score: int, notes: list, plan: dict, change_pct: float, indicators: dict, reasons: str):
-    display_symbol = symbol.replace("_USDT", "")
-    ind_text = "\n".join([f"- {k}: {v}" for k, v in indicators.items()]) if indicators else ""
-    notes_text = ", ".join(notes)
-    entry = plan['entry']
-    sl = plan['sl']
-    tp1 = plan['tp1']
-    tp2 = plan['tp2']
-    sl_pct = (sl - entry) / entry * 100
-    tp1_pct = (tp1 - entry) / entry * 100
-    tp2_pct = (tp2 - entry) / entry * 100
-    web_link = f"https://www.mexc.com/futures/{symbol}"
-    # open_link_text = f"[Webで開く]({web_link})"
-    # text = f"""*▶️ トレード画面:* {open_link_text}
-    # text = f"""*📉 ショート候補: {display_symbol}*
-    text = f"""*📈 ロング候補:* [{display_symbol}]({web_link})
-- 現値: {current_price} / 24h変化率: {change_pct:.2f}%
-
-*スコア:* {score}
+*スコア:* {score} / 必要 {SCORE_THRESHOLD}
 
 *予測 (%表記)*
 - Entry: `{entry}`
@@ -684,60 +548,43 @@ def run_analysis():
                 continue
 
             # 非AI BOS と AI BOS の統合判定（AI が有効なら補正）
-            #score, notes, bos_decision, bos_reason, plan = score_short_setup(symbol, df_5m, df_15m, df_60m)
+            score, notes, bos_decision, bos_reason, plan = score_short_setup(symbol, df_5m, df_15m, df_60m)
+            # logger.info(f"{symbol:<15} | score={score:<2} | bos_decision={str(bos_decision):<5}")
 
-            # スコアリング（ショート／ロング）
-            short_score, short_notes, short_decision, short_reason, short_plan = score_short_setup(symbol, df_5m, df_15m, df_60m)
-            long_result = score_long_setup(symbol, df_5m, df_15m, df_60m)
-
-            direction = None
-            data = None
-
-            # ショート条件
-            if short_decision:
-                direction = "short"
-                data = {
+            if bos_decision:
+            
+                indicators = {
+                    "RSI(5m)": round(rsi(df_5m["close"], 14).iloc[-1], 2),
+                    "RSI(15m)": round(rsi(df_15m["close"], 14).iloc[-1], 2),
+                    "+乖離(5m,EMA50)": round((df_5m["close"].iloc[-1] / ema(df_5m["close"], EMA_DEV_PERIOD).iloc[-1] - 1) * 100, 2),
+                    "ATR(5m)": round(atr(df_5m, ATR_PERIOD).iloc[-1], 6),
+                    "出来高(5m)最新/平均": round(df_5m["vol"].iloc[-1] / max(1e-9, df_5m["vol"].rolling(VOL_SPIKE_LOOKBACK, min_periods=1).mean().iloc[-1]), 2),
+                }
+                scored.append({
                     "symbol": symbol,
-                    "score": short_score,
-                    "notes": short_notes,
-                    "plan": short_plan,
+                    "score": score,
+                    "notes": notes,
+                    "plan": plan,
                     "current_price": current_price,
                     "change_pct": t["change_pct"],
-                    "reasons": short_reason,
                     "indicators": indicators,
-                }
-            # ロング条件
-            elif long_result["bos_decision"]:
-                direction = "long"
-                data = {
-                    "symbol": symbol,
-                    "score": long_result["score"],
-                    "notes": long_result["notes"],
-                    "plan": long_result["plan"],
-                    "current_price": current_price,
-                    "change_pct": t["change_pct"],
-                    "reasons": long_result["bos_reason"],
-                    "indicators": indicators,
-                }
-
-            # どちらか成立したら通知
-            if direction and data:
-                scored.append(data)
+                    "reasons": bos_reason,
+                })
+                #logger.info(f"{symbol} added to scored list (tp1_pct={tp1_pct:.2f}%)")
             
         except Exception:
             logger.error(f"{symbol} 分析中にエラー:\n{traceback.format_exc()}")
 
-    # 通知送信
     scored.sort(key=lambda x: (x["score"], x["change_pct"]), reverse=True)
     # logger.info(f"{len(scored)} total candidates after scoring; preparing to send up to {MAX_ALERTS_PER_RUN} alerts")
     alerts_sent = 0
     # for s in scored[:MAX_ALERTS_PER_RUN]:
     for s in scored:
         try:
-            if "short" in s["reasons"] or "下落" in s["reasons"]:
-                send_short_signal(s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"], s["reasons"])
-            else:
-                send_long_signal(s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"], s["reasons"])
+            # logger.info(f"Sending alert for {s['symbol']} (score={s['score']}, change={s['change_pct']:.2f}%)")
+            send_short_signal(
+                s["symbol"], s["current_price"], s["score"], s["notes"], s["plan"], s["change_pct"], s["indicators"], s["reasons"]
+            )
             NOTIFICATION_CACHE[s["symbol"]] = now
             # logger.info(f"Notification recorded for {s['symbol']} at {now}")
             alerts_sent += 1
