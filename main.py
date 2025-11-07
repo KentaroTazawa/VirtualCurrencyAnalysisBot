@@ -1,5 +1,5 @@
 # main.py (修正版: Groq JSON応答 + 最小変更で緩和/デバッグ切替を追加)
-import os
+import threading, os
 import time
 import traceback
 import logging
@@ -598,13 +598,16 @@ def run_analysis():
 
 @app.route("/")
 def index():
-    return "OK"
+    return "OK", 200
 
 @app.route("/run_analysis", methods=["GET", "HEAD"])
 def run_analysis_route():
     secret = request.args.get("secret")
     run_secret = os.getenv("RUN_SECRET")
 
+    if request.method == "HEAD":
+        return "OK", 200
+      
     if not run_secret:
         logger.error("RUN_SECRET is not set in environment variables.")
         return "サーバー設定エラー: RUN_SECRET 未設定", 500
@@ -613,8 +616,9 @@ def run_analysis_route():
         logger.warning(f"Unauthorized access attempt detected: secret={secret}")
         return "認証エラー: secretが無効です", 403
       
-    run_analysis()
-    return "分析完了", 200
+    #run_analysis()
+    threading.Thread(target=run_analysis).start()
+    return "分析をバックグラウンドで開始しました。", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
