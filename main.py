@@ -604,9 +604,6 @@ def index():
 def run_analysis_route():
     secret = request.args.get("secret")
     run_secret = os.getenv("RUN_SECRET")
-
-    if request.method == "HEAD":
-        return "OK", 200
       
     if not run_secret:
         logger.error("RUN_SECRET is not set in environment variables.")
