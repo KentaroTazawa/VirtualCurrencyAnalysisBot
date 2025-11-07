@@ -438,7 +438,8 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
       
         # 通知条件: (1) スコア閾値以上, (2) TP1閾値以下
         # if score >= SCORE_THRESHOLD and tp1_pct <= TP1_THRESHOLD:
-        if (score >= 11 and tp1_pct <= -7.5) or (score >= 9 and tp1_pct <= -8.5):
+        #if (score >= 11 and tp1_pct <= -7.5) or (score >= 9 and tp1_pct <= -8.5):
+        if score >= 11 and tp1_pct <= -12:
         
             bos_decision, bos_reason = break_of_structure_short_ai(symbol, df_5m)
             # logger.info(f"{symbol} bos_reason={bos_reason}")
