@@ -284,6 +284,16 @@ def count_consecutive_green(df: pd.DataFrame) -> int:
             break
     return cnt
 
+def count_consecutive_red(df: pd.DataFrame) -> int:
+    body = (df["close"] - df["open"]) < 0
+    cnt = 0
+    for val in body.iloc[::-1]:
+        if val:
+            cnt += 1
+        else:
+            break
+    return cnt
+
 # ========= BOS 判定（非AI） =========
 def break_of_structure_short(df_5m: pd.DataFrame) -> bool:
     # 少し緩めの閾値（BOS_RECENT_GAIN_THRESHOLD）を使うように変更（最小限の修正）
