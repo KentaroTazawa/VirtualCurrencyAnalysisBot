@@ -565,8 +565,8 @@ def score_short_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df
       
         # 通知条件: (1) スコア閾値以上, (2) TP1閾値以下
         # if score >= SCORE_THRESHOLD and tp1_pct <= TP1_THRESHOLD:
-        #if (score >= 11 and tp1_pct <= -7.5) or (score >= 9 and tp1_pct <= -8.5):
-        if score >= 11 and tp1_pct <= -12:
+        if (score >= 11 and tp1_pct <= -7.5) or (score >= 9 and tp1_pct <= -8.5):
+        #if score >= 11 and tp1_pct <= -12:
         
             bos_decision, bos_reason = break_of_structure_short_ai(symbol, df_5m)
             # logger.info(f"{symbol} bos_reason={bos_reason}")
@@ -648,7 +648,9 @@ def score_long_setup(symbol: str, df_5m: pd.DataFrame, df_15m: pd.DataFrame, df_
 
         # 通知条件: (1) スコア閾値以上, (2) TP1閾値以上（上昇目標）
         # 閾値はショート版のロジックに合わせて調整済み（例示）
-        if score >= 11 and tp1_pct >= 12:
+        #if score >= 11 and tp1_pct >= 12:
+        if (score >= 11 and tp1_pct >= 7.5) or (score >= 9 and tp1_pct >= 8.5):
+          
             bos_decision, bos_reason = break_of_structure_long_ai(symbol, df_5m)
     except Exception as e:
         logger.warning(f"{symbol} AI判定で例外 (long): {e}")
